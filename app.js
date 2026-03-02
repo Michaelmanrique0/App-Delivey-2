@@ -445,7 +445,10 @@ function crearTarjetaPedido(pedido, index) {
     <div class="pedido-cliente">${pedido.nombre || 'Cliente no especificado'}</div>
     <div class="pedido-info">
       <strong>Teléfono:</strong> ${pedido.telefono || 'No especificado'}<br>
-      <strong>Dirección:</strong> ${pedido.direccion || 'No especificada'}<br>
+      <strong>Dirección:</strong> ${pedido.direccion || 'No especificada'}
+      <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
+        <i class="fa-regular fa-copy"></i> Copiar
+      </button><br>
       <strong>Productos:</strong> ${pedido.productos && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
@@ -704,6 +707,38 @@ function llamar(numero) {
   const n = numero.toString().replace(/\D/g, '');
   if (!n) { alert("Número de teléfono inválido"); return; }
   window.location.href = `tel:${n}`;
+}
+
+function copiarDireccionPedido(index) {
+  const pedido = pedidos[index];
+  const direccion = pedido && pedido.direccion ? String(pedido.direccion).trim() : '';
+  if (!direccion) {
+    alert("No hay dirección para copiar");
+    return;
+  }
+
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(direccion)
+      .then(() => alert("Dirección copiada"))
+      .catch(() => alert("No se pudo copiar la dirección"));
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = direccion;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  try {
+    const ok = document.execCommand('copy');
+    alert(ok ? "Dirección copiada" : "No se pudo copiar la dirección");
+  } catch (e) {
+    alert("No se pudo copiar la dirección");
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }
 
 function whatsappLlamar(numero) {

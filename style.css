@@ -340,6 +340,20 @@ button i,
   min-width: 100px;
 }
 
+.btn-copy-inline {
+  margin: 0 0 0 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: #e7ecf1;
+  color: var(--triad-a-dark);
+  border: 1px solid #c9d3dc;
+  border-radius: 5px;
+}
+
+.btn-copy-inline:hover {
+  background: #dbe4ec;
+}
+
 .pedido-tools {
   margin-top: 15px;
   display: flex;
