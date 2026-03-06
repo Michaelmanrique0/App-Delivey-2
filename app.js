@@ -630,8 +630,6 @@ function marcarEntregado(index) {
   pedido.entregado = true;
   pedido.enCurso = false;
   pedido.posicionPendiente = null;
-  pedidos.splice(index, 1);
-  pedidos.push(pedido);
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -644,6 +642,7 @@ function marcarEnCurso(index) {
   pedido.enCurso = true;
   guardarPedidos();
   renderPedidos();
+  actualizarMarcadores();
 }
 
 function marcarPendiente(index) {
@@ -675,8 +674,6 @@ function marcarNoEntregado(index) {
   pedido.posicionPendiente = null;
   pedido.noEntregado = false;
   pedido.envioRecogido = false;
-  pedidos.splice(index, 1);
-  pedidos.unshift(pedido);
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -1038,8 +1035,6 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion) {
   pedido.posicionPendiente = null;
   pedido.noEntregado = true;
   pedido.envioRecogido = enUbicacion;
-  pedidos.splice(indexFinal, 1);
-  pedidos.push(pedido);
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -1171,8 +1166,7 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
       texto: `El pedido #${pedidoId} ya fue notificado.\n¿Volver a notificar?`,
       textoConfirmar: 'Volver a notificar',
       claseConfirmar: 'btn-notify',
-      textoSecundario: 'Salir',
-      claseSecundario: 'btn-info',
+      mostrarSecundario: false,
       textoCancelar: 'Cerrar',
       onConfirmar: () => notificarEnCamino(indexFinal, pedidoId, { ...opciones, forzarReenvio: true }),
       onSecundario: () => {}
@@ -1279,9 +1273,24 @@ function actualizarMarcadores() {
   });
 }
 
-function crearIconoMarcador(numPedido) {
+function obtenerEstadoVisualPedido(pedidoId) {
+  const idNum = Number(pedidoId);
+  const pedido = pedidos.find((p) => Number(p.id) === idNum);
+  if (!pedido) return 'pendiente';
+  if (pedido.entregado) return 'entregado';
+  if (pedido.enCurso) return 'enCurso';
+  return 'pendiente';
+}
+
+function crearIconoMarcador(numPedido, estado = 'pendiente') {
+  const colores = {
+    pendiente: { fondo: '#2563eb', texto: '#ffffff' },
+    enCurso: { fondo: '#16a34a', texto: '#ffffff' },
+    entregado: { fondo: '#6b7280', texto: '#ffffff' }
+  };
+  const estilo = colores[estado] || colores.pendiente;
   const html = `
-    <div style="background-color:#f44336;color:white;width:35px;height:35px;
+    <div style="background-color:${estilo.fondo};color:${estilo.texto};width:35px;height:35px;
                 border-radius:50%;display:flex;align-items:center;justify-content:center;
                 font-weight:bold;font-size:14px;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.3);">
       #${numPedido}
@@ -1297,7 +1306,8 @@ function geocodificarDireccion(direccion, pedidoId, productos, callback) {
       if (data && data.length > 0) {
         const lat = parseFloat(data[0].lat);
         const lng = parseFloat(data[0].lon);
-        const marker = L.marker([lat, lng], { icon: crearIconoMarcador(Number(pedidoId)) }).addTo(mapa);
+        const estadoVisual = obtenerEstadoVisualPedido(Number(pedidoId));
+        const marker = L.marker([lat, lng], { icon: crearIconoMarcador(Number(pedidoId), estadoVisual) }).addTo(mapa);
         marker.bindPopup(`
           <div style="padding:5px;min-width:200px;">
             <h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>
@@ -1397,7 +1407,8 @@ function procesarURLMapaPedido(url, pedidoId, productos, callback) {
   }
 
   try {
-    const marker = L.marker([lat, lng], { icon: crearIconoMarcador(Number(pedidoId)) }).addTo(mapa);
+    const estadoVisual = obtenerEstadoVisualPedido(Number(pedidoId));
+    const marker = L.marker([lat, lng], { icon: crearIconoMarcador(Number(pedidoId), estadoVisual) }).addTo(mapa);
     marker.bindPopup(`
       <div style="padding:5px;min-width:200px;">
         <h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>
