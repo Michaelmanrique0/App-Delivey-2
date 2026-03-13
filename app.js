@@ -83,6 +83,19 @@ function cargarConfigNotificacionEnUI() {
   actualizarVisibilidadConfigNotificacion();
 }
 
+function abrirConfigNotificacion() {
+  cargarConfigNotificacionEnUI();
+  const modal = document.getElementById('modalConfigNotificacion');
+  if (!modal) return;
+  modal.style.display = 'flex';
+}
+
+function cerrarConfigNotificacion() {
+  const modal = document.getElementById('modalConfigNotificacion');
+  if (!modal) return;
+  modal.style.display = 'none';
+}
+
 function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
   const tieneNequi = document.getElementById('cfgTieneNequi');
   const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
@@ -101,8 +114,7 @@ function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
 
   guardarConfigNotificacionPago();
   cargarConfigNotificacionEnUI();
-  const panelConfig = document.querySelector('.configuracion-notificacion');
-  if (panelConfig && panelConfig.open) panelConfig.open = false;
+  if (mostrarMensaje) cerrarConfigNotificacion();
   if (mostrarMensaje) {
     mostrarModalDecision({
       titulo: 'Configuración guardada',
