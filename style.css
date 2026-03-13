@@ -1049,7 +1049,8 @@ button i,
   }
 
   .config-check-row {
-    flex-direction: column;
-    gap: 8px;
+    flex-direction: row;
+    gap: 12px;
+    flex-wrap: nowrap;
   }
 }
