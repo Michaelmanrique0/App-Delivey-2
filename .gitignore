@@ -1,5 +1,4 @@
 # --- Secrets / local config ---
-supabase-config.js
 .env
 .env.*
 
