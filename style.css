@@ -13,13 +13,37 @@
   --text-light: #f7f9fb;
 }
 
+html {
+  margin: 0;
+}
+
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   margin: 0;
-  padding: 20px;
+  padding: 0;
   background: #f5f5f5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Sin scroll del documento en login/registro (pantalla fija) */
+body.auth-layout {
+  overflow: hidden;
+  height: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+html.auth-layout {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* El padding del “marco” solo en la app principal */
+#mainApp.container {
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
 /* Prevenir zoom en inputs en iOS */
