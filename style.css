@@ -960,6 +960,15 @@ button i,
   margin: 12px 0;
 }
 
+.qr-pedidos-canvas-wrap canvas,
+.qr-pedidos-canvas-wrap img {
+  width: min(280px, 100%) !important;
+  height: auto !important;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  display: block;
+}
+
 .qr-pedidos-aviso {
   color: #b45309;
   font-size: 14px;
@@ -998,6 +1007,20 @@ button i,
 
 .qr-pedidos-acciones .btn-primary {
   margin: 0;
+}
+
+.qr-pedidos-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+#qrParteInfo {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
 }
 
 @media (max-width: 768px) {

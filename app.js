@@ -13,6 +13,15 @@ const CACHE_PEDIDOS_KEY = 'cachePedidos_v1';
 /** Misma clave que antes; datos por usuario vivían en `cachePedidos_v1_<uuid>`. */
 const CACHE_PEDIDOS_LEGACY_KEY = 'cachePedidos_v1';
 
+function escapeHtmlAttr(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function exponerDebugAppDelivery() {
   try {
     window.__appDelivery = {
@@ -720,7 +729,7 @@ function renderPedidos() {
   if (pedidos.length === 0) {
     vistaPedidosActual = 'pendientes';
     vistaPedidosSeleccionadaManual = false;
-    const subVacio = 'Pega un formato de pedido arriba o importa un respaldo JSON.';
+    const subVacio = 'Pega un pedido arriba o importa un respaldo (código D1… o archivo).';
     lista.innerHTML = `<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">${escapeHtmlAttr(subVacio)}</p></div>`;
     actualizarPestañasListaPedidos([], [], [], []);
     renderListaOrdenEntrega();
@@ -1288,9 +1297,20 @@ function reactivarPedidoCancelado(index) {
 function eliminarTodos() {
   if (!confirm("¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.")) return;
   pedidos = [];
-  guardarCachePedidos();
+  nextPedidoId = 1;
+  vistaPedidosActual = 'pendientes';
+  vistaPedidosSeleccionadaManual = false;
+  guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
+  // Mantener el mapa visible y bien dimensionado aunque no haya pedidos.
+  try {
+    if (mapa) {
+      mapaAjustado = false;
+      mapa.invalidateSize();
+      ajustarMapaConReintentos();
+    }
+  } catch (_e) {}
 }
 
 // --- Editar pedido ---
@@ -2337,19 +2357,23 @@ function dibujarRutaEntreMarcadores() {
     }
   }
   if (coordenadas.length < 2) return;
+  const dibujarFallback = () => {
+    const latlngs = coordenadas.map(c => [c[1], c[0]]);
+    rutaLayer = L.polyline(latlngs, { color: '#2196F3', weight: 4, opacity: 0.65, dashArray: '10, 10' }).addTo(mapa);
+  };
 
   const coordsStr = coordenadas.map(c => c.join(',')).join(';');
   fetch(`https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`)
     .then(r => r.json())
     .then(data => {
-      if (data.code !== 'Ok' || !data.routes?.[0]?.geometry?.coordinates) return;
+      if (data.code !== 'Ok' || !data.routes?.[0]?.geometry?.coordinates) {
+        dibujarFallback();
+        return;
+      }
       const latlngs = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
       rutaLayer = L.polyline(latlngs, { color: '#2196F3', weight: 5, opacity: 0.7 }).addTo(mapa);
     })
-    .catch(() => {
-      const latlngs = coordenadas.map(c => [c[1], c[0]]);
-      rutaLayer = L.polyline(latlngs, { color: '#2196F3', weight: 4, opacity: 0.6, dashArray: '10, 10' }).addTo(mapa);
-    });
+    .catch(() => dibujarFallback());
 }
 
 function extraerCoordenadas(url) {
@@ -2456,7 +2480,7 @@ function normalizarPedidoEnMemoria(p) {
 
 
 const EXPORT_JSON_VERSION = 1;
-/** Tope orientativo para QR (byte mode); si supera, igual se muestra texto copiable. */
+/** Tope orientativo para QR único (texto compactado). */
 const QR_PEDIDOS_MAX_CHARS = 2800;
 /** Legado: importación de copias antiguas (solo Base64 del gzip del JSON). */
 const QR_PAYLOAD_PREFIX_GZIP = 'G1';
@@ -2491,6 +2515,111 @@ async function compactExportABytesBinario(obj) {
 
 function codificarBlobQrPrefijoD1(bytes) {
   return QR_BLOB_PREFIX + uint8ToBase64Url(bytes);
+}
+
+let qrPartesEstado = { partes: [], idx: 0 };
+let qrcodeLoaderPromise = null;
+
+function cargarScriptExterno(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function asegurarLibreriaQr() {
+  if (typeof QRCode !== 'undefined') return true;
+  if (!qrcodeLoaderPromise) {
+    qrcodeLoaderPromise = (async () => {
+      const fuentes = [
+        './node_modules/qrcode/build/qrcode.min.js',
+        'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js',
+        'https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js',
+      ];
+      let ultimoError = null;
+      for (const src of fuentes) {
+        try {
+          await cargarScriptExterno(src);
+          if (typeof QRCode !== 'undefined') return true;
+        } catch (e) {
+          ultimoError = e;
+        }
+      }
+      if (ultimoError) throw ultimoError;
+      return typeof QRCode !== 'undefined';
+    })().finally(() => {
+      // Permite reintento manual si la red estuvo caída.
+      qrcodeLoaderPromise = null;
+    });
+  }
+  try {
+    return await qrcodeLoaderPromise;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function dibujarQrPorImagenFallback(wrap, contenido) {
+  if (!wrap) return;
+  const img = document.createElement('img');
+  img.alt = 'Código QR de respaldo';
+  img.style.width = 'min(280px, 100%)';
+  img.style.height = 'auto';
+  img.style.aspectRatio = '1 / 1';
+  img.style.objectFit = 'contain';
+  img.style.display = 'block';
+  img.style.border = '1px solid #e2e8f0';
+  img.style.background = '#fff';
+  // Fallback sin librería QR local/global.
+  img.src = `https://quickchart.io/qr?size=280&margin=2&text=${encodeURIComponent(contenido)}`;
+  img.onerror = () => {
+    wrap.innerHTML = '<p style="color:#b91c1c;">No se pudo generar QR (librería y fallback sin respuesta). Usa Copiar texto.</p>';
+  };
+  wrap.appendChild(img);
+}
+
+async function renderQrParteActual(modal) {
+  const wrap = modal.querySelector('#qrPedidosCanvasWrap');
+  const aviso = modal.querySelector('#qrPedidosAviso');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+
+  const partes = qrPartesEstado.partes || [];
+  const total = partes.length;
+  const idx = Math.max(0, Math.min(qrPartesEstado.idx || 0, total - 1));
+  qrPartesEstado.idx = idx;
+  if (total === 0) {
+    wrap.innerHTML = '<p style="color:#b91c1c;">No hay datos para generar QR.</p>';
+    return;
+  }
+
+  if (!(await asegurarLibreriaQr())) {
+    dibujarQrPorImagenFallback(wrap, partes[idx]);
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  QRCode.toCanvas(
+    canvas,
+    partes[idx],
+    { width: 280, margin: 2, errorCorrectionLevel: 'L' },
+    (err) => {
+      if (err) {
+        console.error(err);
+        wrap.innerHTML = '<p style="color:#b91c1c;">No se pudo generar este QR. Usa Copiar texto.</p>';
+        return;
+      }
+      if (aviso && total > 1) {
+        aviso.style.display = 'block';
+        aviso.textContent = 'Modo QR único activo.';
+      }
+    }
+  );
 }
 
 function serializarPedidosParaExportar() {
@@ -2648,16 +2777,67 @@ async function parsearTextoImportPedidosUniversal(texto) {
 }
 
 function exportarPedidosJson() {
+  // Se conserva el nombre de función para no romper el onclick existente del menú.
+  abrirModalRespaldoTexto();
+}
+
+async function abrirModalRespaldoTexto() {
   cerrarMenuUsuario();
-  const blob = new Blob([serializarPedidosParaExportar()], { type: 'application/json;charset=utf-8' });
-  const a = document.createElement('a');
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  a.href = URL.createObjectURL(blob);
-  a.download = `pedidos-delivery-${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(a.href);
+  let modal = document.getElementById('modalTextoRespaldo');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modalTextoRespaldo';
+    modal.className = 'modal-no-entregado-backdrop';
+    modal.innerHTML =
+      '<div class="modal-no-entregado-card modal-qr-pedidos-card">' +
+      '<h3>Respaldo en texto</h3>' +
+      '<p class="modal-qr-ayuda">Copia este código completo (<code>D1…</code>). No es JSON legible.</p>' +
+      '<label for="textoRespaldoPayload" class="qr-pedidos-label">Código de respaldo</label>' +
+      '<textarea id="textoRespaldoPayload" class="qr-pedidos-textarea" readonly rows="6" spellcheck="false"></textarea>' +
+      '<div class="qr-pedidos-acciones">' +
+      '<button type="button" class="btn-primary" onclick="copiarTextoRespaldo()"><i class="fa-regular fa-copy"></i> Copiar texto</button>' +
+      '<button type="button" class="modal-no-entregado-close" onclick="cerrarModalTextoRespaldo()">Cerrar</button>' +
+      '</div>' +
+      '</div>';
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) cerrarModalTextoRespaldo();
+    });
+  }
+
+  const textarea = modal.querySelector('#textoRespaldoPayload');
+  if (!textarea) return;
+  try {
+    const prep = await prepararCadenaParaQrPedidos();
+    textarea.value = prep.payloadStr || '';
+  } catch (e) {
+    console.error(e);
+    textarea.value = '';
+    alert('No se pudo preparar el respaldo en texto.');
+  }
+  modal.style.display = 'flex';
+}
+
+function copiarTextoRespaldo() {
+  const ta = document.getElementById('textoRespaldoPayload');
+  if (!ta || !ta.value) return;
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  const texto = ta.value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(texto).then(
+      () => alert('Texto copiado.'),
+      () => copiarPayloadQrPedidosFallback(texto)
+    );
+  } else {
+    copiarPayloadQrPedidosFallback(texto);
+  }
+}
+
+function cerrarModalTextoRespaldo() {
+  const modal = document.getElementById('modalTextoRespaldo');
+  if (modal) modal.style.display = 'none';
 }
 
 function pedidoDesdeObjetoImport(o) {
@@ -2824,13 +3004,10 @@ async function abrirModalQrPedidos() {
     modal.innerHTML =
       '<div class="modal-no-entregado-card modal-qr-pedidos-card">' +
       '<h3>Respaldo QR / copiar</h3>' +
-      '<p class="modal-qr-ayuda">Este código <strong>no es un archivo JSON</strong>: es un texto único (<code>D1</code> + Base64) con los datos compactados y, si aplica, comprimidos por dentro. Cópialo o escanéalo e <strong>impórtalo</strong> en esta misma app (o guárdalo como .txt). Para editar a mano usa <strong>Exportar JSON</strong> en el menú.</p>' +
+      '<p class="modal-qr-ayuda">Este respaldo no es JSON legible: es un código <code>D1…</code> compacto. Esta vista genera solo un QR.</p>' +
       '<div id="qrPedidosCanvasWrap" class="qr-pedidos-canvas-wrap"></div>' +
       '<p id="qrPedidosAviso" class="qr-pedidos-aviso" style="display:none;"></p>' +
-      '<label for="qrPedidosPayload" class="qr-pedidos-label">Código de respaldo (D1… — no es JSON legible)</label>' +
-      '<textarea id="qrPedidosPayload" class="qr-pedidos-textarea" readonly rows="5" spellcheck="false"></textarea>' +
       '<div class="qr-pedidos-acciones">' +
-      '<button type="button" class="btn-primary" onclick="copiarPayloadQrPedidos()"><i class="fa-regular fa-copy"></i> Copiar texto</button>' +
       '<button type="button" class="modal-no-entregado-close" onclick="cerrarModalQrPedidos()">Cerrar</button>' +
       '</div>' +
       '</div>';
@@ -2841,8 +3018,7 @@ async function abrirModalQrPedidos() {
   }
   const aviso = modal.querySelector('#qrPedidosAviso');
   const wrap = modal.querySelector('#qrPedidosCanvasWrap');
-  const textarea = modal.querySelector('#qrPedidosPayload');
-  if (!wrap || !textarea) return;
+  if (!wrap) return;
   wrap.innerHTML = '';
   if (aviso) {
     aviso.style.display = 'none';
@@ -2859,53 +3035,24 @@ async function abrirModalQrPedidos() {
     sinComprimirChars = prep.sinComprimirChars;
   } catch (e) {
     console.error(e);
-    textarea.value = '';
     wrap.innerHTML = '<p style="color:#b91c1c;">No se pudo preparar el respaldo.</p>';
     modal.style.display = 'flex';
     return;
   }
 
-  textarea.value = payloadStr;
+  qrPartesEstado = { partes: [payloadStr], idx: 0 };
 
   const partesAviso = [];
   if (comprimido) partesAviso.push(`Compresión interna activa (equivalente ~${sinComprimirChars} caracteres sin binario).`);
   if (payloadStr.length > QR_PEDIDOS_MAX_CHARS) {
-    partesAviso.push(
-      'Supera el tamaño cómodo de un solo QR. Usa «Copiar texto» o exporta JSON desde el menú.'
-    );
+    partesAviso.push('El respaldo es demasiado grande para un QR único. Reduce pedidos o usa respaldo en texto.');
   }
   if (partesAviso.length && aviso) {
     aviso.style.display = 'block';
     aviso.textContent = partesAviso.join(' ');
   }
 
-  if (typeof QRCode === 'undefined') {
-    wrap.innerHTML = '<p style="color:#b91c1c;">No se cargó la librería QR. Recarga la página. El texto de abajo sigue sirviendo para copiar.</p>';
-    modal.style.display = 'flex';
-    return;
-  }
-
-  if (payloadStr.length > QR_PEDIDOS_MAX_CHARS) {
-    wrap.innerHTML =
-      '<p style="color:#64748b;font-size:14px;">QR omitido por tamaño. Copia el texto y en el otro dispositivo guárdalo como <code>.txt</code> e impórtalo, o usa Exportar JSON.</p>';
-    modal.style.display = 'flex';
-    return;
-  }
-
-  const canvas = document.createElement('canvas');
-  wrap.appendChild(canvas);
-  QRCode.toCanvas(
-    canvas,
-    payloadStr,
-    { width: 280, margin: 2, errorCorrectionLevel: 'L' },
-    (err) => {
-      if (err) {
-        console.error(err);
-        wrap.innerHTML =
-          '<p style="color:#b91c1c;">No se pudo generar el QR. Usa el botón Copiar.</p>';
-      }
-    }
-  );
+  await renderQrParteActual(modal);
   modal.style.display = 'flex';
 }
 
