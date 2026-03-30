@@ -386,6 +386,7 @@ function elegirUrlMapsParaBloque(textoCompletoLimpio, bloque, indiceBloque, urls
   if (enBloque) return enBloque[0].trim();
   if (urlsGlobal.length === 0) return '';
   if (urlsGlobal.length === 1) return urlsGlobal[0];
+  if (indiceBloque < urlsGlobal.length) return urlsGlobal[indiceBloque];
   const prefijo = bloque.split(/Para\s+agilizar/i)[0] || bloque;
   const muestra = prefijo.trim().slice(0, 200);
   const posBloque = muestra.length >= 20 ? textoCompletoLimpio.indexOf(muestra.slice(0, 40)) : -1;
@@ -410,30 +411,178 @@ function generarPedidoId(numeroPedido) {
   return Math.max(...pedidos.map(p => p.id), 0) + 1;
 }
 
-function extraerCamposPedido(bloque) {
-  const dirMatch = bloque.match(/📍[^\n]*:\s*([\s\S]*?)(?=🙋|Nombre[^\n]*:|$)/u);
-  const direccion = dirMatch ? dirMatch[1].trim().replace(/\n\s*/g, ' ').trim() : '';
-
-  let nomMatch = bloque.match(/🙋[^\n]*Nombre[^\n]*:\s*([\s\S]*?)(?=📲|$)/u);
-  if (!nomMatch) {
-    nomMatch = bloque.match(/Nombre(?:\s+de\s+quien\s+recibir[aá][^\n]*)?\s*:\s*([\s\S]*?)(?=📲|$)/i);
+/**
+ * WhatsApp suele envolver etiquetas en *negrita* y usar "Dirección de entrega:", "Teléfono de contacto:", etc.
+ * Sin esto los regex no encuentran el ':' donde lo esperan o quedan asteriscos en medio.
+ */
+function normalizarTextoParaExtraerPedido(s) {
+  let t = String(s || '')
+    .replace(/\uFF1A/g, ':')
+    .replace(/\r\n/g, '\n');
+  for (let i = 0; i < 6; i++) {
+    const next = t.replace(/\*([^*\n]+)\*/g, '$1');
+    if (next === t) break;
+    t = next;
   }
-  const nombre = nomMatch ? nomMatch[1].trim().split('\n')[0].trim() : '';
+  for (let i = 0; i < 6; i++) {
+    const next = t.replace(/_([^_\n]+)_/g, '$1');
+    if (next === t) break;
+    t = next;
+  }
+  t = t.replace(/^\*+\s*/gm, '').replace(/\s*\*+$/gm, '');
+  return t;
+}
 
-  const telMatch = bloque.match(/📲[^\n]*:\s*([\s\S]*?)(?=💰|$)/);
-  const telRaw = telMatch ? telMatch[1].trim().split('\n')[0].trim() : '';
-  const primerTel = telRaw.match(/[\d\s]+/);
-  const telefono = primerTel ? primerTel[0].replace(/\s/g, '') : '';
+/** Delimitador de siguiente campo en plantillas de pedido (tras normalizar). */
+const _RE_FIN_CAMPO_PEDIDO =
+  '(?=🙋|📲|💰|Nombre\\b|Tel[ée]fono|Celular|WhatsApp|M[oó]vil\\b|Producto\\b|Pedido\\b|¿Todo|Para agilizar|Env[ií]o|https?:|$)';
 
-  const valMatch = bloque.match(/💰[^\n]*:\s*([\s\S]*?)(?=Envío|$)/);
-  let valor = valMatch ? valMatch[1].trim().split('\n')[0].trim() : '0';
-  valor = valor.replace(/[^\d]/g, '');
-  if (!valor) valor = '0';
+/** Tras "Nombre:" puede venir dirección antes que teléfono; sin 📍/Dirección el capture se come ese bloque. */
+const _RE_FIN_TRAS_NOMBRE = _RE_FIN_CAMPO_PEDIDO.replace(
+  /\|\$\)/,
+  '|📍|(?:(?:Direcci[oó]n|Ubicaci[oó]n|Direccion)\\b)|$)'
+);
 
-  const prodMatch = bloque.match(/Producto\s*🎁[^\n]*:\s*([\s\S]*?)(?=¿Todo en orden|$)/);
-  const productos = prodMatch
-    ? prodMatch[1].trim().split('\n').map(l => l.trim()).filter(l => l)
-    : [];
+function extraerProductosLineasTrasEncabezado(b) {
+  const lines = String(b || '').split('\n');
+  const esCorte = (raw) => {
+    const L = raw.trim();
+    if (!L) return false;
+    if (/^https?:/i.test(L)) return true;
+    if (/^¿Todo en orden/i.test(L)) return true;
+    if (/^Para agilizar\b/i.test(L)) return true;
+    if (/^Env[ií]o\b/i.test(L)) return true;
+    if (/^\d+\s*:\s*$/.test(L) || /^\d+\s*:\s*Para\b/i.test(L)) return true;
+    if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
+    if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|Valor|Total)\b/i.test(L) && /:\s*\S/.test(L)) return true;
+    return false;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!/^Producto\b/i.test(line)) continue;
+    if (/:\s*\S/.test(line)) continue;
+    const out = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const raw = lines[j];
+      if (esCorte(raw)) break;
+      let L = raw.trim();
+      if (!L) continue;
+      L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
+      L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
+      if (L) out.push(L);
+    }
+    if (out.length) return out;
+  }
+  return [];
+}
+
+function extraerCamposPedido(bloque) {
+  const b = normalizarTextoParaExtraerPedido(bloque);
+  const finCampo = _RE_FIN_CAMPO_PEDIDO;
+
+  let direccion = '';
+  const dirPatrones = [
+    new RegExp(`📍[^:\\n]*:\\s*([\\s\\S]*?)${finCampo}`, 'iu'),
+    new RegExp(
+      `(?:Direcci[oó]n\\s+completa|Direcci[oó]n|Ubicaci[oó]n|Direccion)[^:\\n]*:\\s*([\\s\\S]*?)${finCampo}`,
+      'iu'
+    ),
+  ];
+  for (const re of dirPatrones) {
+    const m = b.match(re);
+    if (m && m[1]) {
+      direccion = m[1].trim().replace(/\n\s*/g, ' ').trim();
+      break;
+    }
+  }
+
+  let nombre = '';
+  const finNombre = _RE_FIN_TRAS_NOMBRE;
+  const nomPatrones = [
+    new RegExp(`🙋[^:\\n]*:\\s*([\\s\\S]*?)${finNombre}`, 'iu'),
+    new RegExp(`Nombre[^:\\n]*:\\s*([\\s\\S]*?)${finNombre}`, 'i'),
+    /(?:Recibe|A\s+nombre\s+de|Contacto)\s*:\s*([^\n]+)/i,
+  ];
+  for (const re of nomPatrones) {
+    const m = b.match(re);
+    if (m && m[1]) {
+      nombre = m[1].trim().split('\n')[0].trim();
+      break;
+    }
+  }
+
+  let telefono = '';
+  const telPatrones = [
+    new RegExp(
+      `📲[^:\\n]*:\\s*([\\s\\S]*?)(?=💰|Producto|Pedido|Horario|¿Todo|Para agilizar|Env[ií]o|https?:|$)`,
+      'u'
+    ),
+    /(?:Tel[ée]fono|N[uú]mero\s+de\s+celular|Celular|WhatsApp|M[oó]vil)[^:\n]*:\s*([^\n]+)/i,
+  ];
+  for (const re of telPatrones) {
+    const m = b.match(re);
+    if (m && m[1]) {
+      const telRaw = m[1].trim().split('\n')[0].trim();
+      const primerTel = telRaw.match(/\+?[\d\s().-]{7,}/);
+      let digits = primerTel ? primerTel[0].replace(/[^\d+]/g, '') : '';
+      if (digits.startsWith('+')) digits = digits.slice(1);
+      telefono = digits.replace(/\D/g, '');
+      if (telefono.length >= 7) break;
+      telefono = '';
+    }
+  }
+
+  const finValor =
+    '(?=Env[ií]o|Horario|Producto|¿Todo|Para agilizar|📍|🙋|📲|💰|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
+  let valor = '0';
+  const valPatrones = [
+    new RegExp(`💰[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`, 'i'),
+    new RegExp(
+      '(?:Valor\\s+a\\s+pagar|Valor\\s+a\\s+recoger|A\\s+recoger|Valor|Total|Por\\s+cobrar|Pago|Recaudo)[^:\\n]*:\\s*([\\s\\S]*?)' +
+        finValor,
+      'i'
+    ),
+  ];
+  for (const re of valPatrones) {
+    const m = b.match(re);
+    if (m && m[1]) {
+      const raw = m[1].trim().split('\n')[0].trim();
+      const soloDigitos = raw.replace(/[^\d]/g, '');
+      if (soloDigitos) {
+        valor = soloDigitos;
+        break;
+      }
+    }
+  }
+  if (!valor || valor === '0') {
+    const m2 = b.match(/\$\s*([\d.,]+)/);
+    if (m2) valor = m2[1].replace(/[^\d]/g, '') || '0';
+  }
+
+  let productos = [];
+  const prodFin =
+    '(?=¿Todo en orden|Para agilizar|Env[ií]o|Horario|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
+  const prodPatrones = [
+    new RegExp(`Producto\\s*🎁[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
+    new RegExp(`Producto\\s*🎯[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
+    new RegExp(`Producto[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
+    new RegExp(`Productos?[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
+    new RegExp(`Pedido[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
+  ];
+  for (const re of prodPatrones) {
+    const m = b.match(re);
+    if (m && m[1]) {
+      productos = m[1]
+        .trim()
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !/^https?:/i.test(l));
+      if (productos.length) break;
+    }
+  }
+  if (productos.length === 0) {
+    productos = extraerProductosLineasTrasEncabezado(b);
+  }
 
   return { direccion, nombre, telefono, valor, productos };
 }
@@ -598,7 +747,22 @@ async function procesarPedido() {
 
 async function procesarMultiplesPedidos(texto) {
   const textoLimpio = limpiarTimestampsChat(texto);
-  const bloques = textoLimpio.split(/¿Todo en orden\?\s*😊?\s*/);
+  // Algunos chats no incluyen “¿Todo en orden?” o cambia el texto, así que partimos por cada “Para agilizar…”.
+  const bloques = (() => {
+    const s = String(textoLimpio || '');
+    // Sin flag /m: el $ del lookahead es solo fin de cadena. Con /m, $ coincide al final de cada línea y
+    // el bloque se corta en la primera línea que termina en “…datos:”, dejando 📍/🙋 fuera del match.
+    const re = /(^|\n)\s*(\d+):\s*\n?\s*Para\s+agilizar[\s\S]*?(?=\n\s*\d+:\s*\n?\s*Para\s+agilizar|$)/gi;
+    const encontrados = [];
+    let m;
+    while ((m = re.exec(s))) {
+      const bloque = (m[0] || '').replace(/^\n/, '').trim();
+      if (bloque) encontrados.push(bloque);
+    }
+    if (encontrados.length > 0) return encontrados;
+    const legacy = s.split(/¿Todo en orden\?\s*😊?\s*/).map((b) => b.trim()).filter(Boolean);
+    return legacy;
+  })();
   const urlsGlobal = extraerTodasLasUrlsMapsEnTexto(textoLimpio);
 
   let agregados = 0;
@@ -609,7 +773,8 @@ async function procesarMultiplesPedidos(texto) {
 
   let indicePedidoEnLote = 0;
   for (const bloque of bloques) {
-    if (!bloque.includes('📍')) continue;
+    // Antes se exigía 📍; algunos formatos lo omiten o lo cambian.
+    if (!/Para\s+agilizar/i.test(bloque)) continue;
 
     const mapUrl = elegirUrlMapsParaBloque(textoLimpio, bloque, indicePedidoEnLote, urlsGlobal);
     indicePedidoEnLote += 1;
