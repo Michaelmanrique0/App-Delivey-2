@@ -3,6 +3,8 @@ let mapa = null;
 let marcadores = [];
 let rutaLayer = null;
 let mapaAjustado = false;
+/** Evita repetir el mismo aviso de ubicaciones cercanas en cada refresco del mapa. */
+let firmaUltimoAvisoUbicacionesCercanas = '';
 let nextPedidoId = 1;
 let vistaPedidosActual = 'pendientes';
 let vistaPedidosSeleccionadaManual = false;
@@ -1533,6 +1535,12 @@ function guardarEdicionPedido() {
   }
   if (nuevaUrl !== '') {
     pedido.mapUrl = nuevaUrl;
+    const ext = extraerCoordenadas(nuevaUrl);
+    if (ext) {
+      pedido.coords = { lat: ext.lat, lng: ext.lng };
+    } else {
+      pedido.coords = null;
+    }
   }
 
   guardarPedidos();
@@ -2055,17 +2063,25 @@ function getUbicacionPedido(index, pedidoId) {
   const pedido = pedidos[index];
   if (!pedido) return null;
   let lat = null, lng = null;
-  const marcadorPedido = marcadores.find(m => m.pedidoId === pedidoId);
-  if (marcadorPedido && marcadorPedido.marker) {
+  if (pedido.coords && Number.isFinite(pedido.coords.lat) && Number.isFinite(pedido.coords.lng)) {
+    lat = pedido.coords.lat;
+    lng = pedido.coords.lng;
+  }
+  const marcadorPedido = marcadores.find(m => Number(m.pedidoId) === Number(pedidoId));
+  if ((lat == null || lng == null) && marcadorPedido && marcadorPedido.latReal != null) {
+    lat = marcadorPedido.latReal;
+    lng = marcadorPedido.lngReal;
+  }
+  if ((lat == null || lng == null) && marcadorPedido && marcadorPedido.marker) {
     const pos = marcadorPedido.marker.getLatLng();
     lat = pos.lat;
     lng = pos.lng;
   }
-  if ((!lat || !lng) && pedido.mapUrl) {
+  if ((lat == null || lng == null) && pedido.mapUrl) {
     const match = pedido.mapUrl.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
     if (match) { lat = parseFloat(match[1]); lng = parseFloat(match[2]); }
   }
-  if (lat != null && lng != null) return { lat, lng };
+  if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
   if (pedido.direccion) return { direccion: pedido.direccion };
   return null;
 }
@@ -2382,14 +2398,148 @@ Gracias por tu compra ${nombre}`;
 
 // --- Mapa: marcadores y ruta ---
 
+/** Umbral para avisar de pedidos con la misma zona / muy cercanos (metros). */
+const UMBRAL_M_AVISO_UBICACION_DUPLICADA = 45;
+/** Umbral para separar visualmente dos pines que quedarían encima (metros). */
+const UMBRAL_M_SEPARAR_PINES_MAPA = 38;
+/** Radio del círculo al separar pines superpuestos (metros). */
+const RADIO_SEPARACION_PIN_METROS = 24;
+
+function distanciaMetrosEntreCoords(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const t1 = (lat1 * Math.PI) / 180;
+  const t2 = (lat2 * Math.PI) / 180;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(t1) * Math.cos(t2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function htmlPopupPedidoMapa(pedidoId, productos) {
+  const lista =
+    Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado';
+  return (
+    '<div style="padding:5px;min-width:200px;">' +
+    `<h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>` +
+    `<p style="margin:5px 0;"><strong>Productos:</strong> ${lista}</p>` +
+    '</div>'
+  );
+}
+
+function generarMensajeUbicacionesMuyCercanas() {
+  const activos = pedidos.filter(
+    (p) => !p.cancelado && p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lng)
+  );
+  const pares = [];
+  const visto = new Set();
+  for (let i = 0; i < activos.length; i++) {
+    for (let j = i + 1; j < activos.length; j++) {
+      const a = activos[i];
+      const b = activos[j];
+      const d = distanciaMetrosEntreCoords(a.coords.lat, a.coords.lng, b.coords.lat, b.coords.lng);
+      if (d <= UMBRAL_M_AVISO_UBICACION_DUPLICADA) {
+        const key = a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`;
+        if (!visto.has(key)) {
+          visto.add(key);
+          pares.push({ a: a.id, b: b.id, d });
+        }
+      }
+    }
+  }
+  if (pares.length === 0) return '';
+  let msg =
+    'Varios pedidos comparten ubicación o están muy cerca (menos de ~' +
+    UMBRAL_M_AVISO_UBICACION_DUPLICADA +
+    ' m). En el mapa los pines se muestran ligeramente separados para distinguirlos; la ruta sigue usando las coordenadas reales de cada pedido.\n\n';
+  msg += pares.map((p) => `• Pedidos #${p.a} y #${p.b} (~${Math.round(p.d)} m)`).join('\n');
+  return msg;
+}
+
+/**
+ * Si dos marcadores quedan casi en el mismo punto, los reparte en círculo (solo posición visual).
+ * latReal/lngReal conservan las coordenadas reales del pedido.
+ */
+function aplicarSeparacionVisualMarcadores() {
+  if (!mapa || marcadores.length < 2) return;
+  const n = marcadores.length;
+  const datos = marcadores.map((item) => {
+    const lat = item.latReal != null ? item.latReal : item.marker.getLatLng().lat;
+    const lng = item.lngReal != null ? item.lngReal : item.marker.getLatLng().lng;
+    return { item, lat, lng };
+  });
+  const parent = datos.map((_, i) => i);
+  function find(i) {
+    return parent[i] === i ? i : (parent[i] = find(parent[i]));
+  }
+  function union(i, j) {
+    i = find(i);
+    j = find(j);
+    if (i !== j) parent[j] = i;
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (
+        distanciaMetrosEntreCoords(datos[i].lat, datos[i].lng, datos[j].lat, datos[j].lng) <=
+        UMBRAL_M_SEPARAR_PINES_MAPA
+      ) {
+        union(i, j);
+      }
+    }
+  }
+  const grupos = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    if (!grupos.has(r)) grupos.set(r, []);
+    grupos.get(r).push(i);
+  }
+  const radBase = RADIO_SEPARACION_PIN_METROS / 111320;
+  grupos.forEach((indices) => {
+    if (indices.length < 2) return;
+    const centroLat = indices.reduce((s, idx) => s + datos[idx].lat, 0) / indices.length;
+    const centroLng = indices.reduce((s, idx) => s + datos[idx].lng, 0) / indices.length;
+    const radLat = radBase * (indices.length > 4 ? 1.35 : 1);
+    indices.forEach((idx, k) => {
+      const ang = (2 * Math.PI * k) / indices.length;
+      const dLat = radLat * Math.cos(ang);
+      const dLng = (radLat * Math.sin(ang)) / Math.cos((centroLat * Math.PI) / 180);
+      const newLat = centroLat + dLat;
+      const newLng = centroLng + dLng;
+      const { item } = datos[idx];
+      const pedidoId = item.pedidoId;
+      const p = pedidos.find((x) => Number(x.id) === Number(pedidoId));
+      const prods = p?.productos || [];
+      mapa.removeLayer(item.marker);
+      const estadoVisual = obtenerEstadoVisualPedido(Number(pedidoId));
+      const marker = L.marker([newLat, newLng], {
+        icon: crearIconoMarcador(Number(pedidoId), estadoVisual),
+      }).addTo(mapa);
+      marker.bindPopup(htmlPopupPedidoMapa(pedidoId, prods));
+      const ix = marcadores.findIndex((m) => Number(m.pedidoId) === Number(pedidoId));
+      if (ix >= 0) {
+        marcadores[ix] = {
+          pedidoId,
+          marker,
+          latReal: datos[idx].lat,
+          lngReal: datos[idx].lng,
+        };
+      }
+    });
+  });
+}
+
 function actualizarMarcadores() {
   if (!mapa) return;
+  mapaAjustado = false;
   marcadores.forEach(item => mapa.removeLayer(item.marker));
   marcadores = [];
   if (rutaLayer) { mapa.removeLayer(rutaLayer); rutaLayer = null; }
   if (pedidos.length === 0) return;
 
   let completados = 0;
+  let huboSincCoordsDesdeUrl = false;
   const conUbicacion = pedidos.filter(p => !p.cancelado && (p.coords || p.mapUrl || p.direccion));
   const total = conUbicacion.length;
   if (total === 0) return;
@@ -2404,23 +2554,37 @@ function actualizarMarcadores() {
       if (completados === total) {
         setTimeout(() => {
           if (!mapa) return;
+          aplicarSeparacionVisualMarcadores();
           mapa.invalidateSize();
           ajustarVistaMapa();
           dibujarRutaEntreMarcadores();
+          const aviso = generarMensajeUbicacionesMuyCercanas();
+          if (aviso) {
+            if (aviso !== firmaUltimoAvisoUbicacionesCercanas) {
+              firmaUltimoAvisoUbicacionesCercanas = aviso;
+              setTimeout(() => alert(aviso), 200);
+            }
+          } else {
+            firmaUltimoAvisoUbicacionesCercanas = '';
+          }
+          if (huboSincCoordsDesdeUrl) guardarPedidos();
         }, 100);
       }
     };
 
-    // Prioriza coordenadas ya conocidas para evitar peticiones de red.
-    if (pedido.coords && Number.isFinite(pedido.coords.lat) && Number.isFinite(pedido.coords.lng)) {
-      procesarURLMapaPedido(`https://www.google.com/maps?q=${pedido.coords.lat},${pedido.coords.lng}`, id, prods, cb);
-      return;
-    }
-
+    // Si la URL trae coordenadas, mandan sobre coords guardadas (evita pin viejo al editar el enlace).
     if (url) {
-      const coordsDirectas = extraerCoordenadas(url);
-      if (coordsDirectas) {
-        pedido.coords = { lat: coordsDirectas.lat, lng: coordsDirectas.lng };
+      const coordsDeUrl = extraerCoordenadas(url);
+      if (coordsDeUrl) {
+        const prev = pedido.coords;
+        if (
+          !prev ||
+          Math.abs(prev.lat - coordsDeUrl.lat) > 1e-7 ||
+          Math.abs(prev.lng - coordsDeUrl.lng) > 1e-7
+        ) {
+          huboSincCoordsDesdeUrl = true;
+        }
+        pedido.coords = { lat: coordsDeUrl.lat, lng: coordsDeUrl.lng };
         procesarURLMapaPedido(url, id, prods, cb);
         return;
       }
@@ -2428,10 +2592,21 @@ function actualizarMarcadores() {
         if (coords) {
           pedido.coords = { lat: coords.lat, lng: coords.lng };
           pedido.mapUrl = `https://www.google.com/maps?q=${coords.lat},${coords.lng}`;
+          huboSincCoordsDesdeUrl = true;
           guardarPedidos();
         }
         cb();
       });
+      return;
+    }
+
+    if (pedido.coords && Number.isFinite(pedido.coords.lat) && Number.isFinite(pedido.coords.lng)) {
+      procesarURLMapaPedido(
+        `https://www.google.com/maps?q=${pedido.coords.lat},${pedido.coords.lng}`,
+        id,
+        prods,
+        cb
+      );
       return;
     }
 
@@ -2486,13 +2661,14 @@ function geocodificarDireccion(direccion, pedidoId, productos, callback) {
         const lng = parseFloat(data[0].lon);
         const estadoVisual = obtenerEstadoVisualPedido(Number(pedidoId));
         const marker = L.marker([lat, lng], { icon: crearIconoMarcador(Number(pedidoId), estadoVisual) }).addTo(mapa);
-        marker.bindPopup(`
-          <div style="padding:5px;min-width:200px;">
-            <h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>
-            <p style="margin:5px 0;"><strong>Dirección:</strong> ${direccion}</p>
-            <p style="margin:5px 0;"><strong>Productos:</strong> ${Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
-          </div>`);
-        if (pedidoId !== 'TEMP') marcadores.push({ pedidoId, marker });
+        marker.bindPopup(
+          '<div style="padding:5px;min-width:200px;">' +
+            `<h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>` +
+            `<p style="margin:5px 0;"><strong>Dirección:</strong> ${direccion}</p>` +
+            `<p style="margin:5px 0;"><strong>Productos:</strong> ${Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>` +
+            '</div>'
+        );
+        if (pedidoId !== 'TEMP') marcadores.push({ pedidoId, marker, latReal: lat, lngReal: lng });
         if (callback) callback({ lat, lng });
         return;
       }
@@ -2515,11 +2691,24 @@ function dibujarRutaEntreMarcadores() {
 
   const coordenadas = [];
   for (const p of pedidos) {
-    const item = marcadores.find(m => m.pedidoId === p.id);
-    if (item && item.marker) {
-      const ll = item.marker.getLatLng();
-      coordenadas.push([ll.lng, ll.lat]);
+    if (p.cancelado) continue;
+    let lat = null;
+    let lng = null;
+    if (p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lng)) {
+      lat = p.coords.lat;
+      lng = p.coords.lng;
+    } else {
+      const item = marcadores.find(m => Number(m.pedidoId) === Number(p.id));
+      if (item && item.latReal != null && item.lngReal != null) {
+        lat = item.latReal;
+        lng = item.lngReal;
+      } else if (item && item.marker) {
+        const ll = item.marker.getLatLng();
+        lat = ll.lat;
+        lng = ll.lng;
+      }
     }
+    if (lat != null && lng != null) coordenadas.push([lng, lat]);
   }
   if (coordenadas.length < 2) return;
   const dibujarFallback = () => {
@@ -2592,12 +2781,8 @@ function procesarURLMapaPedido(url, pedidoId, productos, callback) {
   try {
     const estadoVisual = obtenerEstadoVisualPedido(Number(pedidoId));
     const marker = L.marker([lat, lng], { icon: crearIconoMarcador(Number(pedidoId), estadoVisual) }).addTo(mapa);
-    marker.bindPopup(`
-      <div style="padding:5px;min-width:200px;">
-        <h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>
-        <p style="margin:5px 0;"><strong>Productos:</strong> ${Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>
-      </div>`);
-    marcadores.push({ pedidoId, marker });
+    marker.bindPopup(htmlPopupPedidoMapa(pedidoId, productos));
+    marcadores.push({ pedidoId, marker, latReal: lat, lngReal: lng });
     if (callback) callback({ lat, lng });
   } catch (error) {
     alert(`Error al agregar marcador para el pedido #${pedidoId}: ${error.message}`);
