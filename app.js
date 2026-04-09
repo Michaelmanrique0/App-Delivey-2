@@ -27,6 +27,45 @@ function escapeHtmlAttr(s) {
     .replace(/'/g, '&#39;');
 }
 
+/** Texto en HTML (tarjetas, popups), sin comillas para atributos. */
+function escapeHtmlTexto(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function lineasProductosDesdeArray(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return [];
+  return arr
+    .map((p) => String(p || '').trim())
+    .filter((p) => p.length > 0 && !/^cambio\.?$/i.test(p));
+}
+
+function lineasProductosPedidoNormalizadas(pedido) {
+  return lineasProductosDesdeArray(pedido && pedido.productos);
+}
+
+/** Un renglón por producto (WhatsApp / texto plano). */
+function textoProductosEntregaParaSoporte(pedido) {
+  const lineas = lineasProductosPedidoNormalizadas(pedido);
+  if (lineas.length === 0) return 'No especificado';
+  return lineas.join('\n');
+}
+
+/** Un renglón por producto en HTML (<br>), para tarjetas y mapa. */
+function htmlProductosPedidoMultilinea(pedido) {
+  const lineas = lineasProductosPedidoNormalizadas(pedido);
+  if (lineas.length === 0) return 'No especificado';
+  return lineas.map((t) => escapeHtmlTexto(t)).join('<br>');
+}
+
+function htmlProductosArrayMultilinea(productos) {
+  const lineas = lineasProductosDesdeArray(productos);
+  if (lineas.length === 0) return 'No especificado';
+  return lineas.map((t) => escapeHtmlTexto(t)).join('<br>');
+}
+
 /**
  * Aviso dentro de la página (sin cuadros nativos del navegador).
  * tipo: success | error | info | warning — tap para cerrar antes.
@@ -61,6 +100,71 @@ function mostrarToast(mensaje, tipo = 'info', duracionMs = 5200) {
   el.addEventListener('click', () => {
     clearTimeout(t);
     cerrar();
+  });
+}
+
+function scrollToTopApp() {
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function scrollToMapaApp() {
+  const el = document.getElementById('sectionMapaEntregas');
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  window.setTimeout(() => {
+    try {
+      if (mapa && typeof mapa.invalidateSize === 'function') mapa.invalidateSize();
+    } catch (_e) {}
+  }, 450);
+}
+
+let fabNavegacionScrollRaf = null;
+
+function seccionMapaEstaEnVista() {
+  const el = document.getElementById('sectionMapaEntregas');
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  const vh = window.innerHeight || 1;
+  const overlap = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+  if (overlap < vh * 0.18) return false;
+  return r.top < vh * 0.72 && r.bottom > vh * 0.2;
+}
+
+function actualizarVisibilidadFabNavegacion() {
+  const fabUp = document.getElementById('fabNavegacionArriba');
+  const fabMap = document.getElementById('fabNavegacionMapa');
+  const y = window.scrollY ?? document.documentElement.scrollTop ?? 0;
+  const margenArriba = 48;
+  if (fabUp) {
+    const mostrar = y > margenArriba;
+    fabUp.classList.toggle('fab-app-btn--hidden', !mostrar);
+    fabUp.setAttribute('aria-hidden', mostrar ? 'false' : 'true');
+  }
+  if (fabMap) {
+    const enMapa = seccionMapaEstaEnVista();
+    fabMap.classList.toggle('fab-app-btn--hidden', enMapa);
+    fabMap.setAttribute('aria-hidden', enMapa ? 'true' : 'false');
+  }
+}
+
+function programarActualizacionFabNavegacion() {
+  if (fabNavegacionScrollRaf != null) return;
+  fabNavegacionScrollRaf = requestAnimationFrame(() => {
+    fabNavegacionScrollRaf = null;
+    actualizarVisibilidadFabNavegacion();
+  });
+}
+
+function configurarFabNavegacionScroll() {
+  const run = () => programarActualizacionFabNavegacion();
+  window.addEventListener('scroll', run, { passive: true });
+  window.addEventListener('resize', run, { passive: true });
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(run).catch(() => {});
+  }
+  requestAnimationFrame(() => {
+    run();
+    window.setTimeout(run, 320);
   });
 }
 
@@ -1056,6 +1160,7 @@ function renderPedidos() {
     lista.innerHTML = `<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">${escapeHtmlAttr(subVacio)}</p></div>`;
     actualizarPestañasListaPedidos([], [], [], []);
     renderListaOrdenEntrega();
+    programarActualizacionFabNavegacion();
     return;
   }
 
@@ -1114,6 +1219,7 @@ function renderPedidos() {
 
   renderListaOrdenEntrega();
   ajustarMapaConReintentos();
+  programarActualizacionFabNavegacion();
 }
 
 function cambiarVistaPedidos(vista) {
@@ -1168,8 +1274,10 @@ function crearTarjetaPedido(pedido, index) {
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
     : '';
   const etapaActual = obtenerEtapaPedidoUI(pedido);
-  const btnRegresarPendienteHtml = etapaActual === 'enRuta'
-    ? `<button class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendientes</button>`
+  const puedeRegresarAPendientes =
+    etapaActual === 'enRuta' || etapaActual === 'enDestino';
+  const btnRegresarPendienteHtml = puedeRegresarAPendientes
+    ? `<button type="button" class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendientes</button>`
     : '';
   const btnCancelarHtml = (!pedido.entregado && !pedido.cancelado && etapaActual !== 'enRuta' && etapaActual !== 'enDestino')
     ? `<button class="btn-warning" onclick="marcarCancelado(${index})"><i class="fa-solid fa-ban"></i> Cancelar pedido</button>`
@@ -1220,7 +1328,7 @@ function crearTarjetaPedido(pedido, index) {
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
       </button><br>
-      <strong>Productos:</strong> ${Array.isArray(pedido.productos) && pedido.productos.length > 0 ? pedido.productos.join(', ') : 'No especificado'}<br>
+      <strong>Productos:</strong><br>${htmlProductosPedidoMultilinea(pedido)}<br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
     ${etapaActual === 'enDestino' ? `
@@ -1243,13 +1351,13 @@ function crearTarjetaPedido(pedido, index) {
       </details>
     </div>` : ''}
     <div class="pedido-actions">
+      ${btnRegresarPendienteHtml ? `<div class="pedido-actions-row">${btnRegresarPendienteHtml}</div>` : ''}
       ${btnNotificarHtml ? `<div class="pedido-actions-row">${btnNotificarHtml}</div>` : ''}
       ${btnNotificarNuevamenteHtml ? `<div class="pedido-actions-row">${btnNotificarNuevamenteHtml}</div>` : ''}
       ${btnEnrutarHtml ? `<div class="pedido-actions-row">${btnEnrutarHtml}</div>` : ''}
       ${btnEnrutarNuevamenteHtml ? `<div class="pedido-actions-row">${btnEnrutarNuevamenteHtml}</div>` : ''}
       ${btnLlegueDestinoHtml ? `<div class="pedido-actions-row">${btnLlegueDestinoHtml}</div>` : ''}
       ${bloqueAccionesDestinoHtml}
-      ${btnRegresarPendienteHtml ? `<div class="pedido-actions-row">${btnRegresarPendienteHtml}</div>` : ''}
       ${btnCancelarHtml ? `<div class="pedido-actions-row">${btnCancelarHtml}</div>` : ''}
       ${btnReactivarCanceladoHtml ? `<div class="pedido-actions-row">${btnReactivarCanceladoHtml}</div>` : ''}
     </div>
@@ -1303,6 +1411,24 @@ function renderListaOrdenEntrega() {
     };
     acciones.appendChild(mkBtn(-1, '▲', 'Subir en la ruta'));
     acciones.appendChild(mkBtn(1, '▼', 'Bajar en la ruta'));
+
+    if (pedido.enCurso && !pedido.entregado && !pedido.cancelado) {
+      const idxGlobal = pedidos.findIndex((p) => Number(p.id) === Number(pedido.id));
+      if (idxGlobal >= 0) {
+        const bPend = document.createElement('button');
+        bPend.type = 'button';
+        bPend.className = 'orden-btn-a-pendiente';
+        bPend.title = 'Regresar pedido a pendientes';
+        bPend.setAttribute('aria-label', 'Regresar pedido a pendientes');
+        bPend.innerHTML = '<i class="fa-solid fa-rotate-left" aria-hidden="true"></i>';
+        bPend.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          ev.preventDefault();
+          marcarPendiente(idxGlobal);
+        });
+        acciones.appendChild(bPend);
+      }
+    }
 
     item.appendChild(texto);
     item.appendChild(acciones);
@@ -1943,17 +2069,51 @@ function asegurarModalMensajeSoporte() {
   modal.id = 'modalMensajeSoporte';
   modal.className = 'modal-no-entregado-backdrop';
   modal.innerHTML = `
-    <div class="modal-no-entregado-card">
-      <h3>Mensajes de soporte</h3>
-      <p>Selecciona el problema a reportar por WhatsApp:</p>
-      <div class="modal-no-entregado-actions">
-        <button class="btn-support" onclick="enviarMensajeSoporte('no_enviado')">Pedido no enviado</button>
-        <button class="btn-support" onclick="enviarMensajeSoporte('pago_reportado')">Cliente reporta pago</button>
-        <button class="btn-support" onclick="enviarMensajeSoporte('producto_incorrecto')">Producto incorrecto</button>
-        <button class="btn-support" onclick="enviarMensajeSoporte('faltan_productos')">Faltan productos</button>
-        <button class="btn-info" onclick="enviarMensajeSoporte('personalizado')">Mensaje personalizado</button>
+    <div class="modal-no-entregado-card modal-soporte-card">
+      <h3 id="tituloModalMensajeSoporte">Mensajes de soporte</h3>
+      <div id="panelSoporteOpciones">
+        <p>Selecciona el problema a reportar por WhatsApp:</p>
+        <div class="modal-no-entregado-actions">
+          <button type="button" class="btn-support" onclick="enviarMensajeSoporte('no_enviado')">Pedido no enviado</button>
+          <button type="button" class="btn-support" onclick="enviarMensajeSoporte('pago_reportado')">Cliente reporta pago</button>
+          <button type="button" class="btn-support" onclick="enviarMensajeSoporte('producto_incorrecto')">Producto incorrecto</button>
+          <button type="button" class="btn-support" onclick="mostrarPanelSoporteFaltanProductos()">Faltan productos</button>
+          <button type="button" class="btn-info" onclick="mostrarPanelSoportePersonalizado()">Mensaje personalizado</button>
+        </div>
+        <button type="button" class="modal-no-entregado-close" onclick="cerrarModalMensajeSoporte()">Cerrar</button>
       </div>
-      <button class="modal-no-entregado-close" onclick="cerrarModalMensajeSoporte()">Cerrar</button>
+      <div id="panelSoportePersonalizado" class="panel-soporte-personalizado" style="display:none;">
+        <p class="soporte-personalizado-ayuda">Escribe solo el texto del medio. Debajo se añadirá &ldquo;Productos a entregar:&rdquo; y cada producto en un renglón aparte.</p>
+        <label for="textoSoportePersonalizado" class="qr-pedidos-label">Tu mensaje</label>
+        <textarea id="textoSoportePersonalizado" class="qr-pedidos-textarea" rows="5" spellcheck="true" placeholder="Ej: Pedido #12, el cliente pide cambiar la dirección…"></textarea>
+        <div class="modal-no-entregado-actions">
+          <button type="button" class="btn-primary" onclick="confirmarMensajeSoportePersonalizado()">Enviar por WhatsApp</button>
+        </div>
+        <button type="button" class="modal-no-entregado-close" onclick="volverPanelSoporteOpciones()">Cerrar</button>
+      </div>
+      <div id="panelSoporteFaltanProductos" class="panel-soporte-faltan-productos" style="display:none;">
+        <p class="soporte-personalizado-ayuda">Indica qué falta: marca productos del pedido o elige &ldquo;Otro producto&rdquo; si no está en la lista.</p>
+        <div class="soporte-modos-falta" role="radiogroup" aria-label="Cómo indicar el faltante">
+          <label class="soporte-falta-radio-label">
+            <input type="radio" name="faltaModoSoporte" value="lista" checked onchange="sincronizarModoFaltaSoporte()"> Del pedido (marca uno o varios)
+          </label>
+          <label class="soporte-falta-radio-label">
+            <input type="radio" name="faltaModoSoporte" value="otro" onchange="sincronizarModoFaltaSoporte()"> Otro producto (escribir)
+          </label>
+        </div>
+        <div id="wrapFaltaListaSoporte">
+          <p class="qr-pedidos-label soporte-falta-subtitulo">Productos del pedido</p>
+          <div id="contenedorChecksFaltanProductos" class="contenedor-checks-faltan"></div>
+        </div>
+        <div id="wrapFaltaOtroSoporte" class="wrap-falta-otro-soporte" style="display:none;">
+          <label for="textoFaltanOtroProducto" class="qr-pedidos-label">Cuál falta</label>
+          <textarea id="textoFaltanOtroProducto" class="qr-pedidos-textarea soporte-textarea-falta-otro" rows="3" spellcheck="true" placeholder="Ej: aderezo que no venía en el pedido…"></textarea>
+        </div>
+        <div class="modal-no-entregado-actions soporte-falta-acciones">
+          <button type="button" class="btn-primary" onclick="confirmarMensajeSoporteFaltanProductos()">Enviar por WhatsApp</button>
+        </div>
+        <button type="button" class="modal-no-entregado-close" onclick="volverPanelSoporteOpciones()">Cerrar</button>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
@@ -1964,60 +2124,210 @@ function mostrarOpcionesMensajeSoporte(index) {
   const pedido = pedidos[index];
   if (!pedido) return;
   soportePendiente = { index };
+  resetVistaModalMensajeSoporte();
   const modal = asegurarModalMensajeSoporte();
   modal.style.display = 'flex';
+}
+
+function resetVistaModalMensajeSoporte() {
+  const panelOp = document.getElementById('panelSoporteOpciones');
+  const panelPer = document.getElementById('panelSoportePersonalizado');
+  const panelFalta = document.getElementById('panelSoporteFaltanProductos');
+  const ta = document.getElementById('textoSoportePersonalizado');
+  const taOtro = document.getElementById('textoFaltanOtroProducto');
+  const contChecks = document.getElementById('contenedorChecksFaltanProductos');
+  const titulo = document.getElementById('tituloModalMensajeSoporte');
+  if (panelOp) panelOp.style.display = 'block';
+  if (panelPer) panelPer.style.display = 'none';
+  if (panelFalta) panelFalta.style.display = 'none';
+  if (ta) ta.value = '';
+  if (taOtro) taOtro.value = '';
+  if (contChecks) contChecks.innerHTML = '';
+  const rLista = document.querySelector('input[name="faltaModoSoporte"][value="lista"]');
+  const rOtro = document.querySelector('input[name="faltaModoSoporte"][value="otro"]');
+  if (rLista) rLista.checked = true;
+  if (rOtro) rOtro.checked = false;
+  if (titulo) titulo.textContent = 'Mensajes de soporte';
+  sincronizarModoFaltaSoporte();
+}
+
+function mostrarPanelSoportePersonalizado() {
+  const panelOp = document.getElementById('panelSoporteOpciones');
+  const panelPer = document.getElementById('panelSoportePersonalizado');
+  const panelFalta = document.getElementById('panelSoporteFaltanProductos');
+  const ta = document.getElementById('textoSoportePersonalizado');
+  const titulo = document.getElementById('tituloModalMensajeSoporte');
+  if (!panelOp || !panelPer || !ta) return;
+  panelOp.style.display = 'none';
+  if (panelFalta) panelFalta.style.display = 'none';
+  panelPer.style.display = 'block';
+  if (titulo) titulo.textContent = 'Mensaje personalizado';
+  ta.value = '';
+  requestAnimationFrame(() => {
+    try {
+      ta.focus();
+    } catch (_e) {}
+  });
+}
+
+function volverPanelSoporteOpciones() {
+  resetVistaModalMensajeSoporte();
+}
+
+function sincronizarModoFaltaSoporte() {
+  const rLista = document.querySelector('input[name="faltaModoSoporte"][value="lista"]');
+  const wrapLista = document.getElementById('wrapFaltaListaSoporte');
+  const wrapOtro = document.getElementById('wrapFaltaOtroSoporte');
+  const ta = document.getElementById('textoFaltanOtroProducto');
+  const modoLista = !!(rLista && rLista.checked);
+  if (wrapLista) wrapLista.style.display = modoLista ? 'block' : 'none';
+  if (wrapOtro) wrapOtro.style.display = modoLista ? 'none' : 'block';
+  if (modoLista) {
+    if (ta) ta.value = '';
+  } else {
+    document.querySelectorAll('.chk-falta-pedido').forEach((c) => {
+      c.checked = false;
+    });
+    requestAnimationFrame(() => {
+      try {
+        ta?.focus();
+      } catch (_e) {}
+    });
+  }
+}
+
+function mostrarPanelSoporteFaltanProductos() {
+  const panelOp = document.getElementById('panelSoporteOpciones');
+  const panelPer = document.getElementById('panelSoportePersonalizado');
+  const panelFalta = document.getElementById('panelSoporteFaltanProductos');
+  const titulo = document.getElementById('tituloModalMensajeSoporte');
+  const { index } = soportePendiente;
+  const pedido = pedidos[index];
+  if (!panelOp || !panelFalta || !pedido) return;
+  panelOp.style.display = 'none';
+  if (panelPer) panelPer.style.display = 'none';
+  panelFalta.style.display = 'block';
+  if (titulo) titulo.textContent = 'Faltan productos';
+
+  const cont = document.getElementById('contenedorChecksFaltanProductos');
+  const taOtro = document.getElementById('textoFaltanOtroProducto');
+  if (taOtro) taOtro.value = '';
+  if (cont) {
+    cont.innerHTML = '';
+    const lineas = lineasProductosPedidoNormalizadas(pedido);
+    lineas.forEach((txt) => {
+      const row = document.createElement('div');
+      row.className = 'soporte-falta-check-row';
+      const lab = document.createElement('label');
+      lab.className = 'soporte-falta-check-label';
+      const inp = document.createElement('input');
+      inp.type = 'checkbox';
+      inp.className = 'chk-falta-pedido';
+      inp.value = txt;
+      lab.appendChild(inp);
+      lab.appendChild(document.createTextNode(` ${txt}`));
+      row.appendChild(lab);
+      cont.appendChild(row);
+    });
+  }
+
+  const rLista = document.querySelector('input[name="faltaModoSoporte"][value="lista"]');
+  const rOtro = document.querySelector('input[name="faltaModoSoporte"][value="otro"]');
+  const lineasPedido = lineasProductosPedidoNormalizadas(pedido);
+  if (rLista && rOtro) {
+    if (lineasPedido.length === 0) {
+      rOtro.checked = true;
+      rLista.checked = false;
+    } else {
+      rLista.checked = true;
+      rOtro.checked = false;
+    }
+  }
+  sincronizarModoFaltaSoporte();
+  if (lineasPedido.length === 0) {
+    mostrarToast('Este pedido no tiene productos en lista. Indica el faltante por texto.', 'info', 4500);
+  }
+}
+
+function confirmarMensajeSoporteFaltanProductos() {
+  const { index } = soportePendiente;
+  const pedido = pedidos[index];
+  if (!pedido) {
+    cerrarModalMensajeSoporte();
+    return;
+  }
+  const idPedido = pedido.id != null ? pedido.id : 'N/A';
+  const productosPedido = textoProductosEntregaParaSoporte(pedido);
+  const modoOtro = document.querySelector('input[name="faltaModoSoporte"][value="otro"]')?.checked === true;
+  let lineasFaltantes = [];
+  if (modoOtro) {
+    const t = document.getElementById('textoFaltanOtroProducto');
+    const limpio = String(t?.value || '').trim();
+    if (!limpio) {
+      mostrarToast('Escribe qué producto falta o elige productos del pedido.', 'warning');
+      t?.focus();
+      return;
+    }
+    lineasFaltantes = [limpio];
+  } else {
+    document.querySelectorAll('.chk-falta-pedido:checked').forEach((c) => {
+      lineasFaltantes.push(String(c.value || '').trim());
+    });
+    lineasFaltantes = lineasFaltantes.filter(Boolean);
+    if (lineasFaltantes.length === 0) {
+      mostrarToast('Marca al menos un producto o elige "Otro producto".', 'warning');
+      return;
+    }
+  }
+  const faltantesTxt = lineasFaltantes.join('\n');
+  const mensaje = `Pedido #${idPedido}\nEl cliente indica que le hacen falta productos.\nFaltante(s):\n${faltantesTxt}\nProducto(s) del pedido:\n${productosPedido}`;
+  const wa = obtenerSoporteWhatsApp();
+  abrirWhatsAppPreferirApp(wa, mensaje);
+  cerrarModalMensajeSoporte();
+}
+
+function confirmarMensajeSoportePersonalizado() {
+  const { index } = soportePendiente;
+  const pedido = pedidos[index];
+  if (!pedido) {
+    cerrarModalMensajeSoporte();
+    return;
+  }
+  const ta = document.getElementById('textoSoportePersonalizado');
+  if (!ta) return;
+  const limpio = String(ta.value || '').trim();
+  if (!limpio) {
+    mostrarToast('Escribe un mensaje antes de enviar.', 'warning');
+    ta.focus();
+    return;
+  }
+  const idPedido = pedido.id != null ? pedido.id : 'N/A';
+  const productosTxt = textoProductosEntregaParaSoporte(pedido);
+  const mensaje = `El pedido #${idPedido} ${limpio}\nProductos a entregar:\n${productosTxt}`;
+  const wa = obtenerSoporteWhatsApp();
+  abrirWhatsAppPreferirApp(wa, mensaje);
+  cerrarModalMensajeSoporte();
 }
 
 function cerrarModalMensajeSoporte() {
   const modal = document.getElementById('modalMensajeSoporte');
   if (!modal) return;
   modal.style.display = 'none';
+  resetVistaModalMensajeSoporte();
 }
 
 function construirMensajeSoporte(pedido, tipoProblema) {
   const idPedido = pedido.id || 'N/A';
-  const productosRaw = Array.isArray(pedido.productos) && pedido.productos.length > 0
-    ? pedido.productos.join(', ')
-    : 'No especificado';
-  const productos = productosRaw
-    .replace(/(?:^|,\s*)cambio\.?(?=,|$)/gi, '')
-    .replace(/,\s*,/g, ', ')
-    .replace(/^,\s*|\s*,\s*$/g, '')
-    .trim() || 'No especificado';
+  const productos = textoProductosEntregaParaSoporte(pedido);
 
   if (tipoProblema === 'no_enviado') {
-    return `Pedido ${idPedido} no enviado. Producto(s): ${productos}.`;
+    return `Pedido #${idPedido}\nNo enviado.\nProducto(s):\n${productos}`;
   }
   if (tipoProblema === 'pago_reportado') {
-    return `Cliente del pedido ${idPedido} me indica que ya realizó el pago. ¿Me confirma? Producto(s): ${productos}.`;
+    return `Pedido #${idPedido}\nCliente me indica que ya realizó el pago. ¿Me confirma?\nProducto(s):\n${productos}`;
   }
   if (tipoProblema === 'producto_incorrecto') {
-    return `Producto del pedido ${idPedido} no es el que solicitó el cliente. Producto(s) enviado(s): ${productos}.`;
-  }
-  if (tipoProblema === 'faltan_productos') {
-    return `El cliente indica que le hacen falta productos en el pedido ${idPedido}. Producto(s) del pedido: ${productos}.`;
-  }
-
-  if (tipoProblema === 'personalizado') {
-    const lineasProd =
-      Array.isArray(pedido.productos) && pedido.productos.length > 0
-        ? pedido.productos
-            .map((p) => String(p || '').trim())
-            .filter(Boolean)
-            .map((p) => `- ${p}`)
-        : ['- No especificado'];
-    const listaProductos = lineasProd.join('\n');
-    const extra = prompt(
-      'Detalle adicional (opcional). Se incluirá el aviso de que el cliente no responde y debajo la lista de productos, cada uno en una línea.',
-      ''
-    );
-    if (extra === null) return null;
-    let cuerpo = `Pedido #${idPedido}: El cliente no responde.`;
-    if (extra && String(extra).trim()) {
-      cuerpo += `\n\n${String(extra).trim()}`;
-    }
-    cuerpo += `\n\nProductos:\n${listaProductos}`;
-    return cuerpo;
+    return `Pedido #${idPedido}\nEl producto no es el que solicitó el cliente.\nProducto(s) enviado(s):\n${productos}`;
   }
 
   return null;
@@ -2197,11 +2507,9 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   pedido.montoDaviplata = Number(datosPago.montoDaviplata || 0);
   pedido.montoEfectivo = Number(datosPago.montoEfectivo || 0);
 
-  const numeroAdmin = '573143473582';
+  const numeroAdmin = obtenerSoporteWhatsApp();
   const montoRecibido = Number(pedido.montoNequi || 0) + Number(pedido.montoDaviplata || 0) + Number(pedido.montoEfectivo || 0);
-  const productosEntregados = Array.isArray(pedido.productos) && pedido.productos.length > 0
-    ? pedido.productos.join(', ')
-    : 'No especificado';
+  const productosEntregados = textoProductosEntregaParaSoporte(pedido);
 
   let metodoPagoTexto = 'No especificado';
   if (pedido.metodoPagoEntrega === 'nequi') metodoPagoTexto = 'Nequi';
@@ -2217,7 +2525,8 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
     : `$${montoRecibido.toLocaleString('es-CO')}`;
   const mensaje = `Pedido #${pedidoId} entregado
 Monto recibido: ${detalleMonto}
-Producto(s) entregado(s): ${productosEntregados}
+Producto(s) entregado(s):
+${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
   if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
     abrirWhatsAppConTexto(numeroAdmin, mensaje);
@@ -2351,7 +2660,7 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion) {
   const pedido = pedidos[indexFinal];
   if (!pedido) return;
 
-  const numeroAdmin = '573143473582';
+  const numeroAdmin = obtenerSoporteWhatsApp();
   const mensaje = `Pedido #${pedidoId} no entregado`;
   abrirWhatsAppConTexto(numeroAdmin, mensaje);
 
@@ -2734,12 +3043,11 @@ function distanciaMetrosEntreCoords(lat1, lng1, lat2, lng2) {
 }
 
 function htmlPopupPedidoMapa(pedidoId, productos) {
-  const lista =
-    Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado';
+  const lista = htmlProductosArrayMultilinea(productos);
   return (
     '<div style="padding:5px;min-width:200px;">' +
     `<h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>` +
-    `<p style="margin:5px 0;"><strong>Productos:</strong> ${lista}</p>` +
+    `<p style="margin:5px 0;"><strong>Productos:</strong><br>${lista}</p>` +
     '</div>'
   );
 }
@@ -2980,7 +3288,7 @@ function geocodificarDireccion(direccion, pedidoId, productos, callback) {
           '<div style="padding:5px;min-width:200px;">' +
             `<h3 style="margin:0 0 10px 0;color:#4CAF50;font-size:16px;">Pedido #${pedidoId}</h3>` +
             `<p style="margin:5px 0;"><strong>Dirección:</strong> ${direccion}</p>` +
-            `<p style="margin:5px 0;"><strong>Productos:</strong> ${Array.isArray(productos) && productos.length > 0 ? productos.join(', ') : 'No especificado'}</p>` +
+            `<p style="margin:5px 0;"><strong>Productos:</strong><br>${htmlProductosArrayMultilinea(productos)}</p>` +
             '</div>'
         );
         if (pedidoId !== 'TEMP') marcadores.push({ pedidoId, marker, latReal: lat, lngReal: lng });
@@ -3897,6 +4205,7 @@ function iniciarApp() {
   exponerDebugAppDelivery();
   cargarPedidosDesdeLocalStorage();
   configurarArrastrePointerOrdenEntrega();
+  configurarFabNavegacionScroll();
 
   document.documentElement.classList.remove('auth-layout');
   document.body.classList.remove('auth-layout');

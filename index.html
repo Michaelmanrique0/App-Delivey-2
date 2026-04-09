@@ -6,7 +6,7 @@
 <title>Gestión de Pedidos - Delivery App</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-<link rel="stylesheet" href="style.css?v=20260404importtoast">
+<link rel="stylesheet" href="style.css?v=20260404pendiente">
 </head>
 
 <body>
@@ -113,7 +113,7 @@
     </div>
   </div>
 
-  <div class="section">
+  <div id="sectionMapaEntregas" class="section section-mapa-entregas">
     <h2>Mapa de Entregas</h2>
     <div class="mapa-con-orden">
       <div id="mapa" class="mapa-container"></div>
@@ -126,7 +126,16 @@
   </div>
 </div>
 
+<nav class="fab-navegacion-app" aria-label="Accesos rápidos de página">
+  <button type="button" id="fabNavegacionArriba" class="fab-app-btn fab-app-btn--hidden" onclick="scrollToTopApp()" title="Ir arriba" aria-label="Ir al inicio de la página" aria-hidden="true">
+    <i class="fa-solid fa-arrow-up" aria-hidden="true"></i>
+  </button>
+  <button type="button" id="fabNavegacionMapa" class="fab-app-btn fab-app-btn--mapa" onclick="scrollToMapaApp()" title="Ir al mapa" aria-label="Ir al mapa de entregas">
+    <i class="fa-solid fa-arrow-down" aria-hidden="true"></i>
+  </button>
+</nav>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260404importtoast"></script>
+<script src="app.js?v=20260404pendiente"></script>
 </body>
 </html>

@@ -649,6 +649,28 @@ button i,
   border-color: #bbb;
 }
 
+.orden-btn-a-pendiente {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid #93c5fd;
+  border-radius: 6px;
+  background: #eff6ff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--triad-a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.orden-btn-a-pendiente:hover {
+  background: #dbeafe;
+  border-color: #60a5fa;
+}
+
 .orden-item.dragging {
   opacity: 0.55;
   cursor: grabbing;
@@ -1051,6 +1073,89 @@ button i,
   background: #f8fafc;
 }
 
+.panel-soporte-personalizado .qr-pedidos-textarea {
+  font-family: inherit;
+  font-size: 15px;
+  word-break: normal;
+  margin-bottom: 4px;
+}
+
+.soporte-personalizado-ayuda {
+  font-size: 14px;
+  color: #4b5563;
+  line-height: 1.45;
+  margin: 0 0 12px;
+}
+
+.soporte-modos-falta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.soporte-falta-radio-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  color: #334155;
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.soporte-falta-radio-label input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.soporte-falta-subtitulo {
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+.contenedor-checks-faltan {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.soporte-falta-check-row {
+  margin-bottom: 8px;
+}
+
+.soporte-falta-check-row:last-child {
+  margin-bottom: 0;
+}
+
+.soporte-falta-check-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  color: #1e293b;
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.soporte-falta-check-label input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.wrap-falta-otro-soporte .soporte-textarea-falta-otro {
+  font-family: inherit;
+  font-size: 15px;
+  word-break: normal;
+}
+
+.soporte-falta-acciones {
+  margin-top: 14px;
+}
+
 .qr-pedidos-acciones {
   display: flex;
   flex-direction: column;
@@ -1264,6 +1369,87 @@ button i,
     gap: 12px;
     flex-wrap: nowrap;
   }
+}
+
+/* Botones flotantes: inicio y mapa (debajo de modales 9999, sobre el contenido) */
+.fab-navegacion-app {
+  position: fixed;
+  z-index: 8000;
+  left: max(12px, env(safe-area-inset-left, 0px));
+  bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.fab-navegacion-app .fab-app-btn {
+  pointer-events: auto;
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  min-height: 52px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-light);
+  background: var(--triad-a);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.28);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+/* FA Solid usa peso 900; si hereda 600 del button global el glifo queda mal centrado o raro */
+.fab-navegacion-app .fab-app-btn i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.fab-navegacion-app .fab-app-btn i::before {
+  line-height: 1;
+}
+
+.fab-navegacion-app .fab-app-btn:hover {
+  background: var(--triad-a-dark);
+  transform: scale(1.06);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+}
+
+.fab-navegacion-app .fab-app-btn:active {
+  transform: scale(0.96);
+}
+
+.fab-navegacion-app .fab-app-btn--mapa {
+  background: var(--triad-b);
+}
+
+.fab-navegacion-app .fab-app-btn--mapa:hover {
+  background: var(--triad-b-dark);
+}
+
+.fab-navegacion-app .fab-app-btn.fab-app-btn--hidden {
+  display: none !important;
+}
+
+.section-mapa-entregas {
+  scroll-margin-top: 16px;
 }
 
 /* Toasts en página (sustituyen alert nativos) */
