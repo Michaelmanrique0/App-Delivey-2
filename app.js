@@ -1328,7 +1328,7 @@ function crearTarjetaPedido(pedido, index) {
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
       </button><br>
-      <strong>Productos:</strong><br>${htmlProductosPedidoMultilinea(pedido)}<br>
+      <strong class="pedido-etiqueta-productos">Productos:</strong><div class="pedido-productos-lista">${htmlProductosPedidoMultilinea(pedido)}</div><br>
       <strong>Valor:</strong> $${valorFormato}<br>
     </div>
     ${etapaActual === 'enDestino' ? `
@@ -2078,6 +2078,7 @@ function asegurarModalMensajeSoporte() {
           <button type="button" class="btn-support" onclick="enviarMensajeSoporte('pago_reportado')">Cliente reporta pago</button>
           <button type="button" class="btn-support" onclick="enviarMensajeSoporte('producto_incorrecto')">Producto incorrecto</button>
           <button type="button" class="btn-support" onclick="mostrarPanelSoporteFaltanProductos()">Faltan productos</button>
+          <button type="button" class="btn-support" onclick="enviarMensajeSoporte('cliente_no_responde')">Cliente no responde</button>
           <button type="button" class="btn-info" onclick="mostrarPanelSoportePersonalizado()">Mensaje personalizado</button>
         </div>
         <button type="button" class="modal-no-entregado-close" onclick="cerrarModalMensajeSoporte()">Cerrar</button>
@@ -2328,6 +2329,9 @@ function construirMensajeSoporte(pedido, tipoProblema) {
   }
   if (tipoProblema === 'producto_incorrecto') {
     return `Pedido #${idPedido}\nEl producto no es el que solicitó el cliente.\nProducto(s) enviado(s):\n${productos}`;
+  }
+  if (tipoProblema === 'cliente_no_responde') {
+    return `El pedido #${idPedido} Cliente no responde\nProductos a entregar:\n${productos}`;
   }
 
   return null;
@@ -2974,6 +2978,45 @@ function finalizarEntregaConResultado(tipoFinalizacion) {
 
 // --- Notificar en camino ---
 
+function minutosDelDiaRelojLocal() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/** Saludo según la hora del dispositivo (zona local). */
+function saludoPorHoraDispositivo() {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'Buenos días';
+  if (h >= 12 && h < 19) return 'Buenas tardes';
+  return 'Buenas noches';
+}
+
+/** Desde las 17:55 (hora local): se añade disculpa por demora (tráfico / clima). */
+function debeIncluirDisculpaDemoraNotificacionEnCamino() {
+  return minutosDelDiaRelojLocal() >= 17 * 60 + 55;
+}
+
+function construirMensajeNotificarEnCamino(nombre, precio, bloquePago) {
+  const saludo = saludoPorHoraDispositivo();
+  const conDisculpa = debeIncluirDisculpaDemoraNotificacionEnCamino();
+  const cuerpo = conDisculpa
+    ? 'Te pedimos disculpas por la demora en la entrega; por tráfico o por condiciones climáticas hubo retraso en la entrega. Queremos informarte que ya *VOY EN CAMINO* hacia tu ubicación para entregar el pedido de Valero Store.'
+    : 'Te informamos que ya *VOY EN CAMINO* hacia tu ubicación para entregar el pedido de Valero Store.';
+
+  return `${saludo}, ${nombre}
+
+${cuerpo}
+
+Por favor ten en cuenta:
+- Estar pendiente con los $${precio} en mano
+- NO CUENTO CON CAMBIO
+- El tiempo de espera desde la llegada al punto de entrega es de 10 minutos
+
+${bloquePago}
+
+Gracias por tu compra ${nombre}`;
+}
+
 function notificarEnCamino(index, pedidoId, opciones = {}) {
   const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
@@ -2999,19 +3042,7 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
   const precio = parseInt(pedidoFinal.valor || 0, 10).toLocaleString('es-CO');
   const wa = telefonoCliente.startsWith('57') ? telefonoCliente : `57${telefonoCliente}`;
   const bloquePago = construirBloquePagoNotificacion();
-
-  const mensaje = `Hola ${nombre}
-
-Te informamos que nuestro repartidor de Valero Store se encuentra en camino hacia tu ubicación para entregar el pedido.
-
-Por favor ten en cuenta:
-- Estar pendiente con los $${precio} en mano
-- El repartidor NO CUENTA CON CAMBIO
-- El tiempo de espera desde la llegada al punto de entrega es de 10 minutos
-
-${bloquePago}
-
-Gracias por tu compra ${nombre}`;
+  const mensaje = construirMensajeNotificarEnCamino(nombre, precio, bloquePago);
 
   abrirWhatsAppConTexto(wa, mensaje);
   pedidoFinal.notificadoEnCamino = true;

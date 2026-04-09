@@ -456,6 +456,14 @@ button i,
   min-width: 100px;
 }
 
+/* Lista bajo la etiqueta; sin <br> tras "Productos:" para no duplicar salto en móvil (strong en bloque). */
+.pedido-productos-lista {
+  display: block;
+  margin: 0;
+  padding: 0;
+  line-height: inherit;
+}
+
 .btn-copy-inline {
   margin: 0 0 0 8px;
   padding: 4px 8px;
@@ -1318,6 +1326,14 @@ button i,
     display: block;
     margin-top: 8px;
     margin-bottom: 4px;
+  }
+
+  .pedido-info strong.pedido-etiqueta-productos {
+    margin-bottom: 2px;
+  }
+
+  .pedido-info .pedido-productos-lista {
+    margin-top: 0;
   }
   
   h1 {
