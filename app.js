@@ -1328,8 +1328,7 @@ function crearTarjetaPedido(pedido, index) {
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
       </button><br>
-      <strong class="pedido-etiqueta-productos">Productos:</strong><div class="pedido-productos-lista">${htmlProductosPedidoMultilinea(pedido)}</div><br>
-      <strong>Valor:</strong> $${valorFormato}<br>
+      <strong class="pedido-etiqueta-productos">Productos:</strong><div class="pedido-productos-lista">${htmlProductosPedidoMultilinea(pedido)}</div><div class="pedido-fila-valor"><strong>Valor:</strong> $${valorFormato}</div>
     </div>
     ${etapaActual === 'enDestino' ? `
     <div class="pedido-tools">
@@ -1911,6 +1910,7 @@ function asegurarModalEditarPedido() {
     </div>
   `;
   document.body.appendChild(modal);
+  vincularFormateoMilesInput(document.getElementById('editarPedidoValor'));
   return modal;
 }
 
@@ -1961,7 +1961,7 @@ function editarPedido(index) {
   const modal = asegurarModalEditarPedido();
   const inputValor = document.getElementById('editarPedidoValor');
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
-  if (inputValor) inputValor.value = String(pedido.valor || '');
+  if (inputValor) inputValor.value = formatearDigitosMilesEsCo(String(pedido.valor || ''));
   if (inputMapUrl) inputMapUrl.value = String(pedido.mapUrl || '');
   modal.style.display = 'flex';
 }
@@ -2448,6 +2448,46 @@ function parseMontoEntero(valor) {
   return limpio ? parseInt(limpio, 10) : 0;
 }
 
+/** Solo dígitos → texto con separador de miles (es-CO, punto). */
+function formatearDigitosMilesEsCo(texto) {
+  const d = String(texto || '').replace(/\D/g, '');
+  if (d === '') return '';
+  const n = parseInt(d, 10);
+  if (!Number.isFinite(n)) return '';
+  return n.toLocaleString('es-CO');
+}
+
+/** Formatea el valor del input mientras se edita y mantiene el cursor cerca de la posición lógica. */
+function aplicarFormatoMilesEnInput(input) {
+  if (!input) return;
+  const cursorPos = input.selectionStart ?? 0;
+  const valor = String(input.value || '');
+  const digitosIzquierda = valor.slice(0, cursorPos).replace(/\D/g, '').length;
+  const todosDigitos = valor.replace(/\D/g, '');
+  const formateado = todosDigitos === '' ? '' : parseInt(todosDigitos, 10).toLocaleString('es-CO');
+  input.value = formateado;
+  let nuevaPos = 0;
+  if (digitosIzquierda === 0) {
+    nuevaPos = 0;
+  } else {
+    let contados = 0;
+    for (let i = 0; i < formateado.length; i++) {
+      if (/\d/.test(formateado[i])) contados++;
+      nuevaPos = i + 1;
+      if (contados >= digitosIzquierda) break;
+    }
+  }
+  try {
+    input.setSelectionRange(nuevaPos, nuevaPos);
+  } catch (_e) {}
+}
+
+function vincularFormateoMilesInput(input) {
+  if (!input || input.dataset.formateoMiles === '1') return;
+  input.dataset.formateoMiles = '1';
+  input.addEventListener('input', () => aplicarFormatoMilesEnInput(input));
+}
+
 function asegurarModalPagoEntregado() {
   let modal = document.getElementById('modalPagoEntregado');
   if (modal) return modal;
@@ -2477,6 +2517,8 @@ function asegurarModalPagoEntregado() {
     </div>
   `;
   document.body.appendChild(modal);
+  vincularFormateoMilesInput(document.getElementById('montoDigitalPago'));
+  vincularFormateoMilesInput(document.getElementById('montoEfectivoPago'));
   return modal;
 }
 

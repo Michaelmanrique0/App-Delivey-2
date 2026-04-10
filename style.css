@@ -464,6 +464,19 @@ button i,
   line-height: inherit;
 }
 
+/* Una sola línea "Valor: $…" y sin hueco tras la lista de productos */
+.pedido-fila-valor {
+  display: block;
+  margin: 0;
+  padding: 0;
+}
+
+.pedido-fila-valor strong {
+  color: #333;
+  display: inline-block;
+  min-width: 100px;
+}
+
 .btn-copy-inline {
   margin: 0 0 0 8px;
   padding: 4px 8px;
@@ -1334,6 +1347,14 @@ button i,
 
   .pedido-info .pedido-productos-lista {
     margin-top: 0;
+    margin-bottom: 0;
+  }
+
+  .pedido-info .pedido-fila-valor strong {
+    display: inline-block;
+    margin-top: 0;
+    margin-bottom: 0;
+    min-width: 0;
   }
   
   h1 {
