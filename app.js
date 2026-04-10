@@ -1156,7 +1156,7 @@ function renderPedidos() {
   if (pedidos.length === 0) {
     vistaPedidosActual = 'pendientes';
     vistaPedidosSeleccionadaManual = false;
-    const subVacio = 'Pega un pedido arriba o importa un respaldo (código D1… o archivo).';
+    const subVacio = 'Pega un pedido arriba o importa un respaldo (código D1…).';
     lista.innerHTML = `<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">${escapeHtmlAttr(subVacio)}</p></div>`;
     actualizarPestañasListaPedidos([], [], [], []);
     renderListaOrdenEntrega();
@@ -4083,27 +4083,6 @@ async function importarPedidosDesdeTextoPlano(texto, origen = 'texto pegado') {
   });
 }
 
-function importarPedidosDesdeArchivo(evt) {
-  const file = evt.target && evt.target.files && evt.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = async () => {
-    try {
-      await importarPedidosDesdeTextoPlano(String(reader.result || ''), 'archivo');
-    } catch (e) {
-      console.error(e);
-      mostrarToast(
-        'No se pudo leer el archivo. Usa el código D1… de respaldo o un archivo válido exportado por esta app.',
-        'error',
-        8000
-      );
-    } finally {
-      evt.target.value = '';
-    }
-  };
-  reader.readAsText(file, 'utf-8');
-}
-
 function abrirModalImportarRespaldo() {
   cerrarMenuUsuario();
   let modal = document.getElementById('modalImportarRespaldo');
@@ -4119,7 +4098,6 @@ function abrirModalImportarRespaldo() {
       '<textarea id="textoImportarRespaldo" class="qr-pedidos-textarea" rows="6" spellcheck="false" placeholder="Pega aquí el texto D1..."></textarea>' +
       '<div class="qr-pedidos-acciones">' +
       '<button type="button" class="btn-primary" onclick="confirmarImportarRespaldoPegado()">Importar texto pegado</button>' +
-      '<button type="button" class="btn-info" onclick="dispararSelectorImportarPedidos()">Importar desde archivo</button>' +
       '<button type="button" class="modal-no-entregado-close" onclick="cerrarModalImportarRespaldo()">Cerrar</button>' +
       '</div>' +
       '</div>';
@@ -4156,11 +4134,6 @@ function cerrarModalImportarRespaldo() {
   if (modal) modal.style.display = 'none';
 }
 
-function dispararSelectorImportarPedidos() {
-  const input = document.getElementById('inputImportarPedidos');
-  if (input) input.click();
-}
-
 function copiarPayloadQrPedidos() {
   const ta = document.getElementById('qrPedidosPayload');
   if (!ta || !ta.value) return;
@@ -4172,7 +4145,7 @@ function copiarPayloadQrPedidos() {
     navigator.clipboard.writeText(texto).then(
       () =>
         mostrarToast(
-          'Copiado. En el otro equipo: guarda el texto en un archivo .txt o úsalo desde Importar, según tu flujo.',
+          'Copiado. En el otro equipo: pégalo en Importar respaldo (código D1…).',
           'success',
           8000
         ),
