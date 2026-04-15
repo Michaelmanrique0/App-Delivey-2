@@ -356,6 +356,11 @@ button i,
   background: #d1e7dd;
 }
 
+.icon-total-dia {
+  color: #0c4a6e;
+  background: #e0f2fe;
+}
+
 .icon-pago-domiciliario {
   color: #664d03;
   background: #fff3cd;
@@ -370,6 +375,12 @@ button i,
   background: #e9eef4;
   color: var(--triad-a-dark);
   border: 2px solid #c8d3de;
+}
+
+.total-total-dia {
+  background: #e0f2fe;
+  color: #075985;
+  border: 2px solid #bae6fd;
 }
 
 .total-pago-domiciliario {

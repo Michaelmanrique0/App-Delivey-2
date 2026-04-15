@@ -1269,6 +1269,9 @@ function uidPedidoAsignado(p) {
 /** Mismos filtros y sumas que el resumen del mensajero (Nequi, Daviplata, domicilio, etc.). */
 function calcularTotalesEntregaPedidos(arr) {
   const lista = Array.isArray(arr) ? arr : [];
+  const totalDelDia = lista
+    .filter((p) => !p.cancelado)
+    .reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
   const recogidoDelDia = lista
     .filter(
       (p) =>
@@ -1289,8 +1292,13 @@ function calcularTotalesEntregaPedidos(arr) {
     .filter((p) => p.entregado && !p.noEntregado)
     .reduce((sum, p) => sum + Number(p.montoDaviplata || 0), 0);
   const hayDatos =
-    recogidoDelDia > 0 || pagoDomiciliario > 0 || totalPagadoNequi > 0 || totalPagadoDaviplata > 0;
+    totalDelDia > 0 ||
+    recogidoDelDia > 0 ||
+    pagoDomiciliario > 0 ||
+    totalPagadoNequi > 0 ||
+    totalPagadoDaviplata > 0;
   return {
+    totalDelDia,
     recogidoDelDia,
     pagoDomiciliario,
     entregarTienda,
@@ -1306,9 +1314,13 @@ function htmlBloqueTotalesResumen(totales) {
   const fmt = (x) => Number(x).toLocaleString('es-CO');
   return (
     `<div class="totales-resumen">` +
+    `<div class="total-item total-total-dia">` +
+    `<span class="total-icon icon-total-dia"><i class="fa-solid fa-sack-dollar"></i></span>` +
+    `Total a recoger (día): $${fmt(totales.totalDelDia)}` +
+    `</div>` +
     `<div class="total-item total-recogido-dia">` +
     `<span class="total-icon icon-recogido-dia"><i class="fa-solid fa-sack-dollar"></i></span>` +
-    `Recogido del día: $${fmt(totales.recogidoDelDia)}` +
+    `Total: $${fmt(totales.recogidoDelDia)}` +
     `</div>` +
     `<div class="total-item total-pago-domiciliario">` +
     `<span class="total-icon icon-pago-domiciliario"><i class="fa-solid fa-motorcycle"></i></span>` +
@@ -1404,28 +1416,26 @@ function renderPedidos() {
   renderTotalesAdminPorMensajero();
 
   const elResumen = document.getElementById('totalesResumen');
-  if (esSesionAdmin()) {
-    if (elResumen) elResumen.style.display = 'none';
-  } else {
-    const totales = calcularTotalesEntregaPedidos(pedidos);
-    if (elResumen) {
-      const elRecogidoDia = document.getElementById('totalRecogidoDia');
-      const elPagoDomiciliario = document.getElementById('totalPagoDomiciliario');
-      const elEntregarTienda = document.getElementById('totalEntregarTienda');
-      const elPagadoNequi = document.getElementById('totalPagadoNequi');
-      const elPagadoDaviplata = document.getElementById('totalPagadoDaviplata');
-      const itemNequi = elPagadoNequi ? elPagadoNequi.closest('.total-item') : null;
-      const itemDaviplata = elPagadoDaviplata ? elPagadoDaviplata.closest('.total-item') : null;
+  const totales = calcularTotalesEntregaPedidos(pedidos);
+  if (elResumen) {
+    const elTotalDelDia = document.getElementById('totalDelDia');
+    const elRecogidoDia = document.getElementById('totalRecogidoDia');
+    const elPagoDomiciliario = document.getElementById('totalPagoDomiciliario');
+    const elEntregarTienda = document.getElementById('totalEntregarTienda');
+    const elPagadoNequi = document.getElementById('totalPagadoNequi');
+    const elPagadoDaviplata = document.getElementById('totalPagadoDaviplata');
+    const itemNequi = elPagadoNequi ? elPagadoNequi.closest('.total-item') : null;
+    const itemDaviplata = elPagadoDaviplata ? elPagadoDaviplata.closest('.total-item') : null;
 
-      if (elRecogidoDia) elRecogidoDia.textContent = totales.recogidoDelDia.toLocaleString('es-CO');
-      if (elPagoDomiciliario) elPagoDomiciliario.textContent = totales.pagoDomiciliario.toLocaleString('es-CO');
-      if (elEntregarTienda) elEntregarTienda.textContent = totales.entregarTienda.toLocaleString('es-CO');
-      if (elPagadoNequi) elPagadoNequi.textContent = totales.totalPagadoNequi.toLocaleString('es-CO');
-      if (elPagadoDaviplata) elPagadoDaviplata.textContent = totales.totalPagadoDaviplata.toLocaleString('es-CO');
-      if (itemNequi) itemNequi.style.display = totales.totalPagadoNequi > 0 ? 'inline-flex' : 'none';
-      if (itemDaviplata) itemDaviplata.style.display = totales.totalPagadoDaviplata > 0 ? 'inline-flex' : 'none';
-      elResumen.style.display = totales.hayDatos ? 'flex' : 'none';
-    }
+    if (elTotalDelDia) elTotalDelDia.textContent = totales.totalDelDia.toLocaleString('es-CO');
+    if (elRecogidoDia) elRecogidoDia.textContent = totales.recogidoDelDia.toLocaleString('es-CO');
+    if (elPagoDomiciliario) elPagoDomiciliario.textContent = totales.pagoDomiciliario.toLocaleString('es-CO');
+    if (elEntregarTienda) elEntregarTienda.textContent = totales.entregarTienda.toLocaleString('es-CO');
+    if (elPagadoNequi) elPagadoNequi.textContent = totales.totalPagadoNequi.toLocaleString('es-CO');
+    if (elPagadoDaviplata) elPagadoDaviplata.textContent = totales.totalPagadoDaviplata.toLocaleString('es-CO');
+    if (itemNequi) itemNequi.style.display = totales.totalPagadoNequi > 0 ? 'inline-flex' : 'none';
+    if (itemDaviplata) itemDaviplata.style.display = totales.totalPagadoDaviplata > 0 ? 'inline-flex' : 'none';
+    elResumen.style.display = totales.hayDatos ? 'flex' : 'none';
   }
 
   renderListaOrdenEntrega();
