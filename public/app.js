@@ -3018,6 +3018,7 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion) {
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
+  notificarSiguientePedido(pedidoId);
 }
 
 // --- Enrutamiento ---
