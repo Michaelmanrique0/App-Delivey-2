@@ -248,10 +248,30 @@ async function buildOrdersResponseForUser(user) {
       seen.add(id);
     }
   }
-  for (const p of mine) {
-    if (!seen.has(Number(p.id))) ordered.push(p);
+  // Si el mensajero aún no tiene ruta guardada (o faltan ids), respeta el orden del admin (order_index).
+  for (const rawId of orderIndex) {
+    const id = Number(rawId);
+    if (!Number.isFinite(id)) continue;
+    if (seen.has(id)) continue;
+    const p = byMine.get(id);
+    if (p) {
+      ordered.push(p);
+      seen.add(id);
+    }
   }
-  return { orders: ordered, orderIndex: ordered.map((p) => p.id) };
+  for (const p of mine) {
+    const id = Number(p.id);
+    if (!seen.has(id)) ordered.push(p);
+  }
+
+  let routeNotice = null;
+  try {
+    routeNotice = JSON.parse((await getMeta(`route_notice_u${user.id}`)) || 'null');
+  } catch (_e) {
+    routeNotice = null;
+  }
+
+  return { orders: ordered, orderIndex: ordered.map((p) => p.id), routeNotice };
 }
 
 // --- Auth ---
@@ -830,6 +850,40 @@ app.post(
       await upsertOrderRow(id, p);
     }
     res.json({ ok: true, assignedTo: String(uid), count: orderIds.length });
+  })
+);
+
+// --- Routes (admin) ---
+app.patch(
+  '/api/routes/:userId',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const userId = Number(req.params.userId);
+    if (!Number.isFinite(userId) || userId < 1) {
+      res.status(400).json({ error: 'userId inválido' });
+      return;
+    }
+    const u = await getUserById(userId);
+    if (!u || u.role !== 'mensajero') {
+      res.status(400).json({ error: 'Solo puedes definir ruta para usuarios con rol mensajero' });
+      return;
+    }
+    const routeIds = req.body?.routeIds;
+    if (!Array.isArray(routeIds)) {
+      res.status(400).json({ error: 'Se esperaba routeIds: []' });
+      return;
+    }
+    const filtered = routeIds.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+    await setMeta(`route_u${userId}`, JSON.stringify(filtered));
+
+    const notice = {
+      at: Date.now(),
+      by: req.user ? { id: req.user.id, username: req.user.username } : null,
+      message: String(req.body?.message || 'Un administrador modificó el orden de tus pedidos.'),
+    };
+    await setMeta(`route_notice_u${userId}`, JSON.stringify(notice));
+    res.json({ ok: true, userId: String(userId), count: filtered.length });
   })
 );
 

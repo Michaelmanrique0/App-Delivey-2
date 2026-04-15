@@ -96,6 +96,19 @@ function programarSyncPedidosRemoto() {
   }, 450);
 }
 
+function setAppLoadingVisible(visible) {
+  const el = document.getElementById('appLoadingOverlay');
+  if (!el) return;
+  el.style.display = visible ? 'flex' : 'none';
+  el.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
+async function mostrarLoadingYEsperarPintado() {
+  setAppLoadingVisible(true);
+  // Dos frames: permite que el overlay se pinte antes del trabajo pesado (crear tarjetas).
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
 async function syncPedidosAlServidor() {
   if (!sesionUsuario) return;
   const orderIndex = pedidos.map((p) => p.id);
@@ -120,6 +133,19 @@ async function refrescarPedidosDesdeApi() {
     nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
   } else {
     nextPedidoId = 1;
+  }
+
+  // Aviso si el admin modificó el orden (solo mensajeros reciben routeNotice).
+  if (data && data.routeNotice && data.routeNotice.at) {
+    const at = Number(data.routeNotice.at) || 0;
+    const key = `delivery_route_notice_seen_u${sesionUsuario ? sesionUsuario.id : '0'}`;
+    let prev = 0;
+    try { prev = Number(localStorage.getItem(key) || '0') || 0; } catch (_e) { prev = 0; }
+    if (at > prev) {
+      const msg = String(data.routeNotice.message || 'Se modificó el orden de tus pedidos.');
+      mostrarToast(msg, 'info', 9000);
+      try { localStorage.setItem(key, String(at)); } catch (_e) {}
+    }
   }
 }
 
@@ -1028,6 +1054,8 @@ async function procesarPedido() {
     return;
   }
 
+  await mostrarLoadingYEsperarPintado();
+  try {
   const textoLimpio = limpiarTimestampsChat(texto);
 
   const numeroMatch = textoLimpio.match(/(\d+):\s*\n?\s*Para\s+agilizar/i) || textoLimpio.match(/^(\d+):/m);
@@ -1059,15 +1087,14 @@ async function procesarPedido() {
 
   if (!coords) {
     mostrarToast(
-      'No se pudieron extraer coordenadas de la URL ni de la dirección.\n\nVerifica que el enlace de Maps o la dirección sean válidos.',
-      'error',
-      8000
+      'No se pudieron extraer coordenadas de la URL ni de la dirección.\n\nSe guardará el pedido sin coordenadas. Abre el enlace y pega el link completo en el apartado de abajo para aplicar.',
+      'warning',
+      10000
     );
-    return;
   }
 
   const pedidoId = generarPedidoId(numeroPedido);
-  const mapUrlFinal = coords.lat && coords.lng
+  const mapUrlFinal = coords && coords.lat && coords.lng
     ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
     : mapUrl;
 
@@ -1082,7 +1109,7 @@ async function procesarPedido() {
     valor: campos.valor,
     textoOriginal: texto,
     mapUrl: mapUrlFinal,
-    coords: { lat: coords.lat, lng: coords.lng },
+    coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
     ...baseNuevo
   });
 
@@ -1091,6 +1118,7 @@ async function procesarPedido() {
 
   setTimeout(() => {
     if (!mapa) return;
+    if (!coords) return;
     procesarURLMapaPedido(mapUrlFinal, pedidoId, campos.productos, () => {
       ajustarVistaMapa();
       dibujarRutaEntreMarcadores();
@@ -1099,6 +1127,9 @@ async function procesarPedido() {
 
   document.getElementById("textoPedido").value = "";
   mostrarToast(`Pedido #${pedidoId} agregado exitosamente`, 'success');
+  } finally {
+    setAppLoadingVisible(false);
+  }
 }
 
 async function procesarMultiplesPedidos(texto) {
@@ -1106,6 +1137,8 @@ async function procesarMultiplesPedidos(texto) {
     mostrarToast('Solo un administrador puede registrar pedidos desde aquí.', 'warning');
     return;
   }
+  await mostrarLoadingYEsperarPintado();
+  try {
   const textoLimpio = limpiarTimestampsChat(texto);
   // Algunos chats no incluyen “¿Todo en orden?” o cambia el texto, así que partimos por cada “Para agilizar…”.
   const bloques = (() => {
@@ -1187,13 +1220,13 @@ async function procesarMultiplesPedidos(texto) {
     if (btnProcesar) { btnProcesar.textContent = `Procesando pedido ${numLabel}...`; btnProcesar.disabled = true; }
 
     const coords = await obtenerCoordenadas(mapUrl, campos.direccion);
-    if (!coords) {
-      errores.push(`Pedido ${numLabel}: No se pudieron extraer coordenadas`);
-      continue;
+    const sinCoords = !coords;
+    if (sinCoords) {
+      errores.push(`Pedido ${numLabel}: No se pudieron extraer coordenadas (se guardó sin coordenadas)`);
     }
 
     const pedidoId = generarPedidoId(numeroPedido);
-    const mapUrlFinal = coords.lat && coords.lng
+    const mapUrlFinal = coords && coords.lat && coords.lng
       ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
       : mapUrl;
 
@@ -1208,7 +1241,7 @@ async function procesarMultiplesPedidos(texto) {
       valor: campos.valor,
       textoOriginal: bloque.trim(),
       mapUrl: mapUrlFinal,
-      coords: { lat: coords.lat, lng: coords.lng },
+      coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
       ...baseLote
     });
 
@@ -1229,6 +1262,9 @@ async function procesarMultiplesPedidos(texto) {
     msg += `\n\n⚠️ ${errores.length} pedido(s) no agregado(s):\n${errores.join('\n')}`;
   }
   mostrarToast(msg, errores.length > 0 ? 'warning' : 'success', errores.length > 0 ? 12000 : 6000);
+  } finally {
+    setAppLoadingVisible(false);
+  }
 }
 
 function guardarPedidos() {
@@ -1353,6 +1389,97 @@ function renderTotalesAdminPorMensajero() {
   if (!esSesionAdmin()) return;
 }
 
+function pedidoTieneCoordsValidas(p) {
+  return !!(
+    p &&
+    p.coords &&
+    Number.isFinite(Number(p.coords.lat)) &&
+    Number.isFinite(Number(p.coords.lng)) &&
+    Number(p.coords.lat) >= -90 &&
+    Number(p.coords.lat) <= 90 &&
+    Number(p.coords.lng) >= -180 &&
+    Number(p.coords.lng) <= 180
+  );
+}
+
+function pedidoNecesitaCorregirLinkMaps(p) {
+  if (!p || p.cancelado) return false;
+  const url = String(p.mapUrl || '').trim();
+  if (!url) return false;
+  if (pedidoTieneCoordsValidas(p)) return false;
+  const ext = extraerCoordenadas(url);
+  return !ext;
+}
+
+function renderPanelLinksMapsPendientes() {
+  const panel = document.getElementById('mapLinksPendientesPanel');
+  const host = document.getElementById('mapLinksPendientesLista');
+  if (!panel || !host) return;
+
+  const pendientes = pedidos.filter(pedidoNecesitaCorregirLinkMaps);
+  if (!pendientes.length) {
+    panel.style.display = 'none';
+    host.innerHTML = '';
+    return;
+  }
+
+  const rows = pendientes
+    .map((p) => {
+      const id = Number(p.id);
+      const url = String(p.mapUrl || '').trim();
+      const safeUrl = escapeHtmlTexto(url);
+      return (
+        `<div class="map-links-item">` +
+        `<div class="map-links-row-top">` +
+        `<div class="map-links-pedido-label">Pedido #${escapeHtmlTexto(String(id))}</div>` +
+        `<div class="map-links-url">${safeUrl}</div>` +
+        `</div>` +
+        `<div class="map-links-actions">` +
+        `<button type="button" class="btn-map-open" onclick="abrirLinkMapsPendiente(${id})">Abrir</button>` +
+        `</div>` +
+        `<div class="map-links-input-wrap">` +
+        `<input id="mapFixInput_${id}" class="map-links-input" type="text" placeholder="Pega aquí el enlace completo de Google Maps" value="">` +
+        `<button type="button" class="btn-map-apply" onclick="void aplicarLinkMapsPendiente(${id})">Aplicar</button>` +
+        `</div>` +
+        `</div>`
+      );
+    })
+    .join('');
+
+  host.innerHTML = rows;
+  panel.style.display = 'block';
+}
+
+function abrirLinkMapsPendiente(pedidoId) {
+  const p = pedidos.find((x) => Number(x.id) === Number(pedidoId));
+  if (!p) return;
+  const url = String(p.mapUrl || '').trim();
+  if (!url) return;
+  window.open(url, '_blank');
+}
+
+async function aplicarLinkMapsPendiente(pedidoId) {
+  const p = pedidos.find((x) => Number(x.id) === Number(pedidoId));
+  if (!p) return;
+  const input = document.getElementById(`mapFixInput_${Number(pedidoId)}`);
+  const nuevaUrl = input ? String(input.value || '').trim() : '';
+  if (!nuevaUrl) {
+    mostrarToast('Pega un enlace completo de Google Maps para aplicar.', 'warning');
+    return;
+  }
+  const coords = await obtenerCoordenadas(nuevaUrl, p.direccion);
+  if (!coords) {
+    mostrarToast('No se pudieron extraer coordenadas de ese enlace. Prueba con otro link de Google Maps.', 'error', 8000);
+    return;
+  }
+  p.coords = { lat: coords.lat, lng: coords.lng };
+  p.mapUrl = `https://www.google.com/maps?q=${coords.lat},${coords.lng}`;
+  guardarPedidos();
+  renderPedidos();
+  setTimeout(() => actualizarMarcadores(), 200);
+  mostrarToast(`Ubicación aplicada al pedido #${p.id}`, 'success');
+}
+
 function renderPedidos() {
   // Si en memoria quedaron duplicados (por cache o recargas), normalizar antes de pintar.
   pedidos = deduplicarPedidosPorId(pedidos);
@@ -1394,6 +1521,7 @@ function renderPedidos() {
     if (elResumenVacio) elResumenVacio.style.display = 'none';
     renderTotalesAdminPorMensajero();
     if (esSesionAdmin()) renderPanelAsignacionesMensajeros();
+    renderPanelLinksMapsPendientes();
     renderListaOrdenEntrega();
     programarActualizacionFabNavegacion();
     return;
@@ -1438,6 +1566,7 @@ function renderPedidos() {
     elResumen.style.display = totales.hayDatos ? 'flex' : 'none';
   }
 
+  renderPanelLinksMapsPendientes();
   renderListaOrdenEntrega();
   ajustarMapaConReintentos();
   programarActualizacionFabNavegacion();
@@ -1774,11 +1903,70 @@ function moverPedidoUnPasoEnOrdenActiva(pedidoId, delta) {
   const j = i + delta;
   if (j < 0 || j >= activos.length) return;
   const targetId = activos[j].id;
+  if (esSesionAdmin()) {
+    const p1 = pedidos.find((p) => Number(p.id) === Number(pedidoId));
+    const p2 = pedidos.find((p) => Number(p.id) === Number(targetId));
+    const uids = new Set(
+      [p1?.assignedTo, p2?.assignedTo].map((x) => String(x || '').trim()).filter(Boolean)
+    );
+    if (uids.size > 0) {
+      const nombres = [...uids]
+        .map((uid) => {
+          const m = (listaMensajerosCache || []).find((x) => String(x.id) === String(uid));
+          return m ? String(m.username || uid) : String(uid);
+        })
+        .join(', ');
+      const ok = window.confirm(
+        `Estos pedidos ya fueron asignados a ${nombres}. ¿Deseas modificar el orden?`
+      );
+      if (!ok) return;
+      // Si confirma, al finalizar se actualizará la ruta del/los mensajero(s) y se notificará.
+    }
+  }
+
   if (moverPedidoPorId(pedidoId, targetId)) {
     guardarPedidos();
     renderPedidos();
     // Al cambiar el orden solo recalculamos la ruta; no recreamos marcadores ni reencuadramos el mapa.
     redibujarRutaDebounced(120);
+    if (esSesionAdmin()) {
+      void notificarMensajerosOrdenActualizado();
+    }
+  }
+}
+
+function idsRutaActivaMensajeroDesdeOrdenActual(uid) {
+  const key = String(uid || '').trim();
+  if (!key) return [];
+  return pedidos
+    .filter((p) => !p.cancelado && !p.entregado && String(p.assignedTo || '').trim() === key)
+    .map((p) => Number(p.id))
+    .filter(Number.isFinite);
+}
+
+async function notificarMensajerosOrdenActualizado() {
+  if (!esSesionAdmin()) return;
+  const activosAsignados = pedidos.filter((p) => !p.cancelado && !p.entregado && String(p.assignedTo || '').trim());
+  const uids = [...new Set(activosAsignados.map((p) => String(p.assignedTo || '').trim()).filter(Boolean))];
+  if (uids.length === 0) return;
+  for (const uid of uids) {
+    const routeIds = idsRutaActivaMensajeroDesdeOrdenActual(uid);
+    if (!routeIds.length) continue;
+    const m = (listaMensajerosCache || []).find((x) => String(x.id) === String(uid));
+    const nombre = m ? String(m.username || uid) : String(uid);
+    try {
+      await apiJson(`/api/routes/${encodeURIComponent(String(uid))}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          routeIds,
+          message: `Un administrador modificó el orden de tus pedidos asignados.`,
+        }),
+      });
+      mostrarToast(`Se actualizó el orden para ${nombre}.`, 'success', 4500);
+    } catch (e) {
+      console.error(e);
+      mostrarToast(`No se pudo notificar el orden a ${nombre}.`, 'warning', 7000);
+    }
   }
 }
 

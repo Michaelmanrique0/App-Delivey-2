@@ -100,6 +100,13 @@
   </div>
 </div>
 
+<div id="appLoadingOverlay" class="app-loading-overlay" style="display:none;" aria-hidden="true">
+  <div class="app-loading-card" role="status" aria-live="polite">
+    <div class="app-loading-spinner" aria-hidden="true"></div>
+    <div class="app-loading-text">Cargando pedidos, por favor espera...</div>
+  </div>
+</div>
+
 <div id="modalRecuperarClave" class="modal-no-entregado-backdrop" style="display:none;" aria-hidden="true">
   <div class="modal-no-entregado-card auth-modal-recuperar">
     <h3>Recuperar contraseña</h3>
@@ -205,6 +212,11 @@
     <textarea id="textoPedido" class="textarea-pedidos-chat" placeholder="Ejemplo: líneas con [hora] Tienda: …, enlace maps.google.com en otra línea, bloque &quot;Para agilizar tu pedido…&quot; con 📍 🙋 📲 💰 y producto. Varios pedidos: uno tras otro."></textarea>
     <br><br>
     <button type="button" id="btnProcesarPedido" class="btn-primary" onclick="procesarPedido()">Procesar pedido(s)</button>
+    <div id="mapLinksPendientesPanel" class="map-links-pendientes" style="display:none;" aria-live="polite">
+      <h3 class="map-links-pendientes-titulo">Enlaces de Maps por corregir</h3>
+      <p class="map-links-pendientes-ayuda">Algunos pedidos tienen un enlace corto o no se pudieron obtener coordenadas. Ábrelo, copia el enlace completo y pégalo aquí para aplicar.</p>
+      <div id="mapLinksPendientesLista"></div>
+    </div>
   </div>
 
   <div class="section">
