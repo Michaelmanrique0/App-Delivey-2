@@ -1903,36 +1903,18 @@ function moverPedidoUnPasoEnOrdenActiva(pedidoId, delta) {
   const j = i + delta;
   if (j < 0 || j >= activos.length) return;
   const targetId = activos[j].id;
-  if (esSesionAdmin()) {
-    const p1 = pedidos.find((p) => Number(p.id) === Number(pedidoId));
-    const p2 = pedidos.find((p) => Number(p.id) === Number(targetId));
-    const uids = new Set(
-      [p1?.assignedTo, p2?.assignedTo].map((x) => String(x || '').trim()).filter(Boolean)
-    );
-    if (uids.size > 0) {
-      const nombres = [...uids]
-        .map((uid) => {
-          const m = (listaMensajerosCache || []).find((x) => String(x.id) === String(uid));
-          return m ? String(m.username || uid) : String(uid);
-        })
-        .join(', ');
-      const ok = window.confirm(
-        `Estos pedidos ya fueron asignados a ${nombres}. ¿Deseas modificar el orden?`
-      );
-      if (!ok) return;
-      // Si confirma, al finalizar se actualizará la ruta del/los mensajero(s) y se notificará.
+  void (async () => {
+    if (!(await advertirSiAdminReordenaAsignados([pedidoId, targetId]))) return;
+    if (moverPedidoPorId(pedidoId, targetId)) {
+      guardarPedidos();
+      renderPedidos();
+      // Al cambiar el orden solo recalculamos la ruta; no recreamos marcadores ni reencuadramos el mapa.
+      redibujarRutaDebounced(120);
+      if (esSesionAdmin()) {
+        void notificarMensajerosOrdenActualizado();
+      }
     }
-  }
-
-  if (moverPedidoPorId(pedidoId, targetId)) {
-    guardarPedidos();
-    renderPedidos();
-    // Al cambiar el orden solo recalculamos la ruta; no recreamos marcadores ni reencuadramos el mapa.
-    redibujarRutaDebounced(120);
-    if (esSesionAdmin()) {
-      void notificarMensajerosOrdenActualizado();
-    }
-  }
+  })();
 }
 
 function idsRutaActivaMensajeroDesdeOrdenActual(uid) {
@@ -1965,7 +1947,9 @@ async function notificarMensajerosOrdenActualizado() {
       mostrarToast(`Se actualizó el orden para ${nombre}.`, 'success', 4500);
     } catch (e) {
       console.error(e);
-      mostrarToast(`No se pudo notificar el orden a ${nombre}.`, 'warning', 7000);
+      const status = e && e.status ? ` (HTTP ${e.status})` : '';
+      const msg = e && e.message ? ` ${String(e.message)}` : '';
+      mostrarToast(`No se pudo modificar el orden de ${nombre}.${status}${msg}`, 'warning', 9000);
     }
   }
 }
@@ -1980,7 +1964,22 @@ function moverPedidoPorId(draggedId, targetId) {
   return true;
 }
 
-function advertirSiAdminReordenaAsignados(idsPedidos) {
+async function confirmarEnModalApp({ titulo, texto, confirmar = 'Modificar orden', cancelar = 'Cancelar' }) {
+  return await new Promise((resolve) => {
+    mostrarModalDecision({
+      titulo,
+      texto,
+      textoConfirmar: confirmar,
+      textoCancelar: cancelar,
+      claseConfirmar: 'btn-warning',
+      mostrarSecundario: false,
+      onConfirmar: () => resolve(true),
+      onCancelar: () => resolve(false),
+    });
+  });
+}
+
+async function advertirSiAdminReordenaAsignados(idsPedidos) {
   if (!esSesionAdmin()) return true;
   const uids = new Set();
   for (const pid of idsPedidos) {
@@ -1995,7 +1994,12 @@ function advertirSiAdminReordenaAsignados(idsPedidos) {
       return m ? String(m.username || uid) : String(uid);
     })
     .join(', ');
-  return window.confirm(`Estos pedidos ya fueron asignados a ${nombres}. ¿Deseas modificar el orden?`);
+  return await confirmarEnModalApp({
+    titulo: 'Pedidos ya asignados',
+    texto: `Estos pedidos ya fueron asignados a ${nombres}.\n\nSi modificas el orden aquí, también cambiará el orden que verá el mensajero.\n\n¿Deseas modificar el orden?`,
+    confirmar: 'Sí, modificar',
+    cancelar: 'No',
+  });
 }
 
 /** Inserta el pedido inmediatamente antes de `beforeId` (tras quitar el arrastrado del array). */
@@ -2080,24 +2084,31 @@ function limpiarHintsOrdenEntrega(lista) {
   lista.querySelectorAll('.orden-item.orden-drop-hint').forEach((el) => el.classList.remove('orden-drop-hint'));
 }
 
-function aplicarReordenListaOrdenSegunY(listaOrden, clientY, draggedId) {
+async function aplicarReordenListaOrdenSegunY(listaOrden, clientY, draggedId) {
   const beforeEl = ordenItemInsertBeforeDesdeClienteY(listaOrden, clientY);
   let ok = false;
   if (beforeEl) {
     const beforeId = parseInt(beforeEl.dataset.id, 10);
-    if (Number.isFinite(beforeId)) ok = moverPedidoAntesDeId(draggedId, beforeId);
+    if (Number.isFinite(beforeId) && (await advertirSiAdminReordenaAsignados([draggedId, beforeId]))) {
+      ok = moverPedidoAntesDeId(draggedId, beforeId);
+    }
   } else {
     const items = [...listaOrden.querySelectorAll('.orden-item:not(.dragging)')];
     const last = items[items.length - 1];
     if (last) {
       const afterId = parseInt(last.dataset.id, 10);
-      if (Number.isFinite(afterId)) ok = moverPedidoDespuesDeId(draggedId, afterId);
+      if (Number.isFinite(afterId) && (await advertirSiAdminReordenaAsignados([draggedId, afterId]))) {
+        ok = moverPedidoDespuesDeId(draggedId, afterId);
+      }
     }
   }
   if (ok) {
     guardarPedidos();
     renderPedidos();
     redibujarRutaDebounced(120);
+    if (esSesionAdmin()) {
+      void notificarMensajerosOrdenActualizado();
+    }
   }
   return ok;
 }
@@ -2127,7 +2138,7 @@ function ordenItemPointerMove(e) {
   }
 }
 
-function ordenItemPointerEnd(e) {
+async function ordenItemPointerEnd(e) {
   if (!ordenEntregaArrastre || e.pointerId !== ordenEntregaArrastre.pointerId) return;
   const snap = ordenEntregaArrastre;
   ordenEntregaArrastre = null;
@@ -2178,7 +2189,7 @@ function ordenItemPointerEnd(e) {
       }
     }
   } else {
-    ok = aplicarReordenListaOrdenSegunY(lista, e.clientY, pedidoId);
+    ok = await aplicarReordenListaOrdenSegunY(lista, e.clientY, pedidoId);
   }
   if (ph && ph.parentNode) ph.remove();
   itemEl.style.display = '';
@@ -2264,7 +2275,7 @@ function handleDragOver(e) {
   return false;
 }
 
-function handleDrop(e) {
+async function handleDrop(e) {
   e.stopPropagation();
   if (!draggedElement || draggedElement === this) return false;
   const draggedId = parseInt(draggedElement.dataset.id, 10);
@@ -2272,7 +2283,7 @@ function handleDrop(e) {
   if (
     Number.isFinite(draggedId) &&
     Number.isFinite(targetId) &&
-    advertirSiAdminReordenaAsignados([draggedId, targetId]) &&
+    (await advertirSiAdminReordenaAsignados([draggedId, targetId])) &&
     moverPedidoPorId(draggedId, targetId)
   ) {
     guardarPedidos();
