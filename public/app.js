@@ -4837,13 +4837,8 @@ function resetUiModalRecuperarClave() {
 function abrirModalRecuperarClave() {
   const modal = document.getElementById('modalRecuperarClave');
   const inp = document.getElementById('recuperarEmail');
-  const sinMail = document.getElementById('modalRecuperarSinMail');
   const ayuda = document.getElementById('modalRecuperarAyuda');
   resetUiModalRecuperarClave();
-  if (sinMail) {
-    sinMail.style.display = 'none';
-    sinMail.textContent = '';
-  }
   if (inp) inp.value = '';
   if (inp) inp.disabled = false;
   if (ayuda) {
@@ -4854,33 +4849,6 @@ function abrirModalRecuperarClave() {
   if (modal) {
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
-  }
-  void actualizarAvisoCorreoEnModalRecuperar();
-}
-
-async function actualizarAvisoCorreoEnModalRecuperar() {
-  const sinMail = document.getElementById('modalRecuperarSinMail');
-  if (!sinMail) return;
-  try {
-    const r = await apiFetch('/api/auth/status');
-    const s = await r.json();
-    if (s.authLinksInResponse) {
-      sinMail.style.display = 'block';
-      sinMail.textContent =
-        'Modo sin correo (AUTH_LINKS_IN_RESPONSE): tras comprobar el correo podrás confirmarlo y cambiar la contraseña en esta ventana.';
-      return;
-    }
-    if (!s.mailConfigured) {
-      sinMail.style.display = 'block';
-      sinMail.textContent =
-        'El servidor no tiene configurado el envío de correo (MAIL_FROM y RESEND_API_KEY, o SMTP). ' +
-        'Activa AUTH_LINKS_IN_RESPONSE=true para recuperar la contraseña sin correo, o configura un proveedor de correo.';
-    } else {
-      sinMail.style.display = 'none';
-      sinMail.textContent = '';
-    }
-  } catch (_e) {
-    /* sin bloquear el modal */
   }
 }
 
