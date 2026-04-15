@@ -2255,10 +2255,6 @@ button i,
   margin-bottom: 28px;
 }
 
-.page-usuarios-totales-seccion-titulo {
-  margin-top: 28px;
-}
-
 .page-usuarios-asignaciones-titulo {
   margin: 24px 0 8px;
   font-size: 1.1rem;
@@ -2294,6 +2290,16 @@ button i,
   border-radius: 10px;
   padding: 12px 14px;
   background: #fafbfc;
+}
+
+.usuarios-roles-mensajero-pagos {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.usuarios-roles-mensajero-pagos .totales-resumen {
+  margin-bottom: 0;
 }
 
 .usuarios-roles-mensajero-nombre {

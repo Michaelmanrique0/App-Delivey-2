@@ -1330,52 +1330,15 @@ function htmlBloqueTotalesResumen(totales) {
   );
 }
 
-/** Solo administrador: totales Nequi/Daviplata/recogido por mensajero (vista Usuarios y roles). */
+/** Contenedor legacy: los totales van dentro de cada tarjeta en `usuariosRolesAsignaciones`. */
 function renderTotalesAdminPorMensajero() {
   const hostAdmin = document.getElementById('totalesAdminPorMensajero');
   if (!hostAdmin) return;
-  if (!esSesionAdmin()) {
-    hostAdmin.innerHTML = '';
-    hostAdmin.style.display = 'none';
-    return;
-  }
-  const rows = [];
-  for (const m of listaMensajerosCache) {
-    const id = String(m.id);
-    const subset = pedidos.filter((p) => uidPedidoAsignado(p) === id);
-    const t = calcularTotalesEntregaPedidos(subset);
-    if (!t.hayDatos) continue;
-    rows.push({ titulo: m.username, totales: t });
-  }
-  const sinAsignar = pedidos.filter((p) => uidPedidoAsignado(p) === '');
-  const tSin = calcularTotalesEntregaPedidos(sinAsignar);
-  if (tSin.hayDatos) {
-    rows.push({ titulo: 'Sin asignar', totales: tSin });
-  }
-  const idsEnLista = new Set(listaMensajerosCache.map((m) => String(m.id)));
-  const idsOrfanos = new Set();
-  for (const p of pedidos) {
-    const a = uidPedidoAsignado(p);
-    if (a && !idsEnLista.has(a)) idsOrfanos.add(a);
-  }
-  for (const orphanId of idsOrfanos) {
-    const subset = pedidos.filter((p) => uidPedidoAsignado(p) === orphanId);
-    const t = calcularTotalesEntregaPedidos(subset);
-    if (!t.hayDatos) continue;
-    rows.push({ titulo: `Mensajero (id ${orphanId})`, totales: t });
-  }
-  if (rows.length === 0) {
-    hostAdmin.innerHTML = '';
-    hostAdmin.style.display = 'none';
-  } else {
-    hostAdmin.innerHTML = rows
-      .map(
-        (r) =>
-          `<article class="admin-mensajero-totales-card"><h3 class="admin-mensajero-totales-titulo">${escapeHtmlTexto(r.titulo)}</h3>${htmlBloqueTotalesResumen(r.totales)}</article>`
-      )
-      .join('');
-    hostAdmin.style.display = 'flex';
-  }
+  hostAdmin.innerHTML = '';
+  hostAdmin.style.display = 'none';
+  hostAdmin.setAttribute('hidden', '');
+  hostAdmin.setAttribute('aria-hidden', 'true');
+  if (!esSesionAdmin()) return;
 }
 
 function renderPedidos() {
@@ -1418,6 +1381,7 @@ function renderPedidos() {
     const elResumenVacio = document.getElementById('totalesResumen');
     if (elResumenVacio) elResumenVacio.style.display = 'none';
     renderTotalesAdminPorMensajero();
+    if (esSesionAdmin()) renderPanelAsignacionesMensajeros();
     renderListaOrdenEntrega();
     programarActualizacionFabNavegacion();
     return;
@@ -5305,45 +5269,94 @@ function pedidosAsignadosAMensajero(userId) {
   return pedidos.filter((p) => String(p.assignedTo || '') === key);
 }
 
+function htmlPedidosAsignadosLista(asignados) {
+  if (!asignados.length) {
+    return '<p class="usuarios-roles-sin-pedidos">Ningún pedido asignado en este momento.</p>';
+  }
+  let lis = '';
+  for (const pedido of asignados) {
+    const val = formatearDigitosMilesEsCo(String(pedido.valor || '0'));
+    const nombre = escapeHtmlTexto(String(pedido.nombre || 'Sin nombre'));
+    const estado = escapeHtmlTexto(etiquetaEstadoPedidoResumida(pedido));
+    lis += `<li><span class="usuarios-roles-pedido-id">#${escapeHtmlTexto(String(pedido.id))}</span> <span class="usuarios-roles-pedido-nombre">${nombre}</span> <span class="usuarios-roles-pedido-meta">${estado} · $${escapeHtmlTexto(val)}</span></li>`;
+  }
+  return `<ul class="usuarios-roles-pedidos-lista">${lis}</ul>`;
+}
+
+function htmlCardPedidosYPagosMensajero(titulo, asignados) {
+  const totales = calcularTotalesEntregaPedidos(asignados);
+  return (
+    `<article class="usuarios-roles-mensajero-card">` +
+    `<h4 class="usuarios-roles-mensajero-nombre">${escapeHtmlTexto(titulo)}</h4>` +
+    htmlPedidosAsignadosLista(asignados) +
+    `<div class="usuarios-roles-mensajero-pagos">${htmlBloqueTotalesResumen(totales)}</div>` +
+    `</article>`
+  );
+}
+
 function renderPanelAsignacionesMensajeros() {
   const host = document.getElementById('usuariosRolesAsignaciones');
   if (!host) return;
-  if (!listaMensajerosCache.length) {
-    host.innerHTML =
-      '<p class="usuarios-roles-asignaciones-vacio">No hay mensajeros registrados. Crea usuarios con rol mensajero para ver asignaciones aquí.</p>';
+  if (!esSesionAdmin()) {
+    host.innerHTML = '';
     return;
   }
-  const frag = document.createDocumentFragment();
+
+  renderTotalesAdminPorMensajero();
+
+  const vacioMensajeros =
+    '<p class="usuarios-roles-asignaciones-vacio">No hay mensajeros registrados. Crea usuarios con rol mensajero para ver asignaciones aquí.</p>';
+
+  if (!listaMensajerosCache.length) {
+    if (pedidos.length === 0) {
+      host.innerHTML = vacioMensajeros;
+      return;
+    }
+    const porAsignado = new Map();
+    for (const p of pedidos) {
+      const k = uidPedidoAsignado(p);
+      if (!porAsignado.has(k)) porAsignado.set(k, []);
+      porAsignado.get(k).push(p);
+    }
+    const partes = [];
+    const keysOrden = [...porAsignado.keys()].sort((a, b) => {
+      if (a === '') return -1;
+      if (b === '') return 1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+    for (const k of keysOrden) {
+      const list = porAsignado.get(k);
+      const titulo = k === '' ? 'Sin asignar' : `Mensajero (id ${k})`;
+      partes.push(htmlCardPedidosYPagosMensajero(titulo, list));
+    }
+    host.innerHTML = partes.join('');
+    return;
+  }
+
+  const chunks = [];
   for (const m of listaMensajerosCache) {
     const asignados = pedidosAsignadosAMensajero(m.id);
-    const card = document.createElement('article');
-    card.className = 'usuarios-roles-mensajero-card';
-    const h = document.createElement('h4');
-    h.className = 'usuarios-roles-mensajero-nombre';
-    h.textContent = String(m.username || `Usuario #${m.id}`);
-    card.appendChild(h);
-    if (asignados.length === 0) {
-      const p = document.createElement('p');
-      p.className = 'usuarios-roles-sin-pedidos';
-      p.textContent = 'Ningún pedido asignado en este momento.';
-      card.appendChild(p);
-    } else {
-      const ul = document.createElement('ul');
-      ul.className = 'usuarios-roles-pedidos-lista';
-      for (const pedido of asignados) {
-        const li = document.createElement('li');
-        const val = formatearDigitosMilesEsCo(String(pedido.valor || '0'));
-        const nombre = escapeHtmlTexto(String(pedido.nombre || 'Sin nombre'));
-        const estado = escapeHtmlTexto(etiquetaEstadoPedidoResumida(pedido));
-        li.innerHTML = `<span class="usuarios-roles-pedido-id">#${escapeHtmlTexto(String(pedido.id))}</span> <span class="usuarios-roles-pedido-nombre">${nombre}</span> <span class="usuarios-roles-pedido-meta">${estado} · $${escapeHtmlTexto(val)}</span>`;
-        ul.appendChild(li);
-      }
-      card.appendChild(ul);
-    }
-    frag.appendChild(card);
+    const titulo = String(m.username || `Usuario #${m.id}`);
+    chunks.push(htmlCardPedidosYPagosMensajero(titulo, asignados));
   }
-  host.innerHTML = '';
-  host.appendChild(frag);
+
+  const sinAsignar = pedidos.filter((p) => uidPedidoAsignado(p) === '');
+  if (sinAsignar.length) {
+    chunks.push(htmlCardPedidosYPagosMensajero('Sin asignar', sinAsignar));
+  }
+
+  const idsEnLista = new Set(listaMensajerosCache.map((x) => String(x.id)));
+  const idsOrfanos = new Set();
+  for (const p of pedidos) {
+    const a = uidPedidoAsignado(p);
+    if (a && !idsEnLista.has(a)) idsOrfanos.add(a);
+  }
+  for (const orphanId of [...idsOrfanos].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))) {
+    const subset = pedidos.filter((p) => uidPedidoAsignado(p) === orphanId);
+    chunks.push(htmlCardPedidosYPagosMensajero(`Mensajero (id ${orphanId})`, subset));
+  }
+
+  host.innerHTML = chunks.join('');
 }
 
 async function actualizarPanelAsignacionesMensajerosDesdeApi() {

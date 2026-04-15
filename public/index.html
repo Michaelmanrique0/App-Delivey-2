@@ -285,16 +285,13 @@
     <p class="modal-usuarios-ayuda page-usuarios-roles-intro">Crea mensajeros u otros administradores y cambia roles cuando lo necesites.</p>
     <div id="usuariosRolesLista" class="modal-usuarios-lista page-usuarios-lista"></div>
 
-    <h3 class="page-usuarios-asignaciones-titulo"><i class="fa-solid fa-motorcycle" aria-hidden="true"></i> Pedidos asignados por mensajero</h3>
-    <p class="page-usuarios-asignaciones-ayuda">Pedidos que ahora mismo tienen asignado a cada mensajero en la lista cargada. Usa <strong>Actualizar asignaciones</strong> si acabas de cambiar pedidos en otro dispositivo o quieres traer lo último del servidor.</p>
+    <h3 class="page-usuarios-asignaciones-titulo"><i class="fa-solid fa-motorcycle" aria-hidden="true"></i> Pedidos y pagos por mensajero</h3>
+    <p class="page-usuarios-asignaciones-ayuda">En cada tarjeta: pedidos asignados ahora mismo y debajo los mismos totales que ve el mensajero (recogido del día, pago domiciliario $12.000 por envío, a entregar a tienda, Nequi y Daviplata). Usa <strong>Actualizar asignaciones</strong> si cambiaste pedidos en otro dispositivo.</p>
     <div class="page-usuarios-asignaciones-toolbar">
       <button type="button" class="btn-info" onclick="void actualizarPanelAsignacionesMensajerosDesdeApi()">Actualizar asignaciones</button>
     </div>
     <div id="usuariosRolesAsignaciones" class="usuarios-roles-asignaciones" aria-live="polite"></div>
-
-    <h3 class="page-usuarios-asignaciones-titulo page-usuarios-totales-seccion-titulo"><i class="fa-solid fa-sack-dollar" aria-hidden="true"></i> Recogido del día, domicilio, Nequi y Daviplata (por mensajero)</h3>
-    <p class="page-usuarios-asignaciones-ayuda">Mismos totales que ve cada mensajero en pedidos: recogido, pago domiciliario ($12.000 por envío), a entregar a tienda, Nequi y Daviplata. Incluye fila <strong>Sin asignar</strong> si hay pedidos sin mensajero.</p>
-    <div id="totalesAdminPorMensajero" class="admin-totales-por-mensajero" style="display: none;" aria-label="Totales por mensajero"></div>
+    <div id="totalesAdminPorMensajero" class="admin-totales-por-mensajero" style="display: none;" hidden aria-hidden="true"></div>
 
     <h3 class="modal-usuarios-subtitulo">Nuevo usuario</h3>
     <div class="modal-usuarios-form modal-usuarios-form--etiquetado page-usuarios-form-nuevo">
@@ -315,6 +312,6 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260419usuariosrolesTotales"></script>
+<script src="app.js?v=20260419pedidosPagosUnidos"></script>
 </body>
 </html>
