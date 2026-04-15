@@ -18,6 +18,111 @@ const CACHE_PEDIDOS_KEY = 'cachePedidos_v1';
 /** Misma clave que antes; datos por usuario vivían en `cachePedidos_v1_<uuid>`. */
 const CACHE_PEDIDOS_LEGACY_KEY = 'cachePedidos_v1';
 
+const AUTH_TOKEN_KEY = 'deliveryAuthToken';
+/** Pestaña auth guardada al recargar: `login` | `registro` (solo sessionStorage). */
+const AUTH_TAB_SESSION_KEY = 'deliveryAuthTab';
+/** Vista principal de la app tras recargar la pestaña (solo admin: usuarios y roles). */
+const VISTA_APP_SESSION_KEY = 'deliveryVistaApp';
+const VISTA_APP_USUARIOS_ROLES = 'usuarios-roles';
+/** Mismo id que el `<style>` inyectado en `index.html` antes del primer pintado. */
+const PRE_RESTORE_USUARIOS_ROLES_STYLE_ID = 'preRestoreUsuariosRolesStyle';
+let sesionUsuario = null;
+let syncRemotoTimer = null;
+/** Lista de mensajeros para asignación (solo admin). */
+let listaMensajerosCache = [];
+
+function esSesionAdmin() {
+  return !!sesionUsuario && sesionUsuario.role === 'admin';
+}
+
+function esSesionMensajero() {
+  return !!sesionUsuario && sesionUsuario.role === 'mensajero';
+}
+
+function getAuthToken() {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+function setAuthToken(token) {
+  try {
+    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+    else localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch (_e) {}
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  const t = getAuthToken();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  if (options.body && typeof options.body === 'string' && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  return fetch(path, { ...options, headers });
+}
+
+async function apiJson(path, options = {}) {
+  const res = await apiFetch(path, options);
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (_e) {
+    data = { error: text || 'Respuesta inválida' };
+  }
+  if (!res.ok) {
+    const msg = (data && data.error) || res.statusText || 'Error';
+    const err = new Error(msg);
+    err.status = res.status;
+    if (data && data.code) err.code = data.code;
+    if (data && data.detail) err.detail = data.detail;
+    throw err;
+  }
+  return data;
+}
+
+function programarSyncPedidosRemoto() {
+  if (!sesionUsuario) return;
+  if (syncRemotoTimer) clearTimeout(syncRemotoTimer);
+  syncRemotoTimer = setTimeout(() => {
+    syncRemotoTimer = null;
+    syncPedidosAlServidor().catch((e) => {
+      console.error(e);
+      mostrarToast(String(e.message || e), 'error', 7000);
+    });
+  }, 450);
+}
+
+async function syncPedidosAlServidor() {
+  if (!sesionUsuario) return;
+  const orderIndex = pedidos.map((p) => p.id);
+  if (esSesionAdmin()) {
+    await apiJson('/api/orders', {
+      method: 'PUT',
+      body: JSON.stringify({ orders: pedidos, orderIndex }),
+    });
+  } else {
+    await apiJson('/api/orders/messenger', {
+      method: 'PUT',
+      body: JSON.stringify({ orders: pedidos, orderIndex }),
+    });
+  }
+}
+
+async function refrescarPedidosDesdeApi() {
+  const data = await apiJson('/api/orders', { method: 'GET' });
+  const raw = Array.isArray(data.orders) ? data.orders : [];
+  pedidos = deduplicarPedidosPorId(raw.map(normalizarPedidoEnMemoria));
+  if (pedidos.length > 0) {
+    nextPedidoId = Math.max(...pedidos.map((p) => p.id), 0) + 1;
+  } else {
+    nextPedidoId = 1;
+  }
+}
+
 function escapeHtmlAttr(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -44,6 +149,11 @@ function lineasProductosDesdeArray(arr) {
 
 function lineasProductosPedidoNormalizadas(pedido) {
   return lineasProductosDesdeArray(pedido && pedido.productos);
+}
+
+/** Texto multilínea (p. ej. modal editar) → array `productos` del pedido. */
+function productosPedidoDesdeTextoPlano(texto) {
+  return lineasProductosDesdeArray(String(texto || '').split(/\r?\n/));
 }
 
 /** Un renglón por producto (WhatsApp / texto plano). */
@@ -364,9 +474,22 @@ function toggleMenuUsuario(ev) {
   const panel = document.getElementById('menuUsuarioPanel');
   const btn = document.getElementById('btnMenuUsuario');
   if (!panel || !btn) return;
-  const abierto = panel.style.display === 'block';
-  panel.style.display = abierto ? 'none' : 'block';
+  const abierto = panel.style.display === 'flex';
+  panel.style.display = abierto ? 'none' : 'flex';
   btn.setAttribute('aria-expanded', abierto ? 'false' : 'true');
+}
+
+/** Menú hamburguesa: vista principal (pedidos / mapa) y scroll al inicio. */
+function menuIrAlInicio() {
+  cerrarMenuUsuario();
+  const page = document.getElementById('pageUsuariosRoles');
+  const enUsuariosRoles = page && page.style.display === 'block';
+  if (enUsuariosRoles) {
+    cerrarPaginaUsuariosRoles();
+    return;
+  }
+  limpiarVistaAppSesion();
+  scrollToTopApp();
 }
 
 function abrirConfigNotificacionDesdeMenu() {
@@ -890,6 +1013,10 @@ async function obtenerCoordenadas(url, direccion) {
 }
 
 async function procesarPedido() {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede registrar pedidos desde aquí.', 'warning');
+    return;
+  }
   const texto = document.getElementById("textoPedido").value.trim();
   if (!texto) {
     mostrarToast('Por favor, pega el formato del pedido', 'warning');
@@ -944,6 +1071,8 @@ async function procesarPedido() {
     ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
     : mapUrl;
 
+  const baseNuevo = pedidoNuevoBase();
+  if (sesionUsuario) baseNuevo.createdBy = String(sesionUsuario.id);
   pedidos.push({
     id: pedidoId,
     nombre: campos.nombre,
@@ -954,7 +1083,7 @@ async function procesarPedido() {
     textoOriginal: texto,
     mapUrl: mapUrlFinal,
     coords: { lat: coords.lat, lng: coords.lng },
-    ...pedidoNuevoBase()
+    ...baseNuevo
   });
 
   guardarPedidos();
@@ -973,6 +1102,10 @@ async function procesarPedido() {
 }
 
 async function procesarMultiplesPedidos(texto) {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede registrar pedidos desde aquí.', 'warning');
+    return;
+  }
   const textoLimpio = limpiarTimestampsChat(texto);
   // Algunos chats no incluyen “¿Todo en orden?” o cambia el texto, así que partimos por cada “Para agilizar…”.
   const bloques = (() => {
@@ -1064,6 +1197,8 @@ async function procesarMultiplesPedidos(texto) {
       ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
       : mapUrl;
 
+    const baseLote = pedidoNuevoBase();
+    if (sesionUsuario) baseLote.createdBy = String(sesionUsuario.id);
     pedidos.push({
       id: pedidoId,
       nombre: campos.nombre,
@@ -1074,7 +1209,7 @@ async function procesarMultiplesPedidos(texto) {
       textoOriginal: bloque.trim(),
       mapUrl: mapUrlFinal,
       coords: { lat: coords.lat, lng: coords.lng },
-      ...pedidoNuevoBase()
+      ...baseLote
     });
 
     agregados++;
@@ -1099,6 +1234,7 @@ async function procesarMultiplesPedidos(texto) {
 function guardarPedidos() {
   pedidos = deduplicarPedidosPorId(pedidos);
   guardarCachePedidos();
+  if (sesionUsuario) programarSyncPedidosRemoto();
 }
 
 function actualizarPestañasListaPedidos(pendientes, enCurso, entregados, cancelados) {
@@ -1156,7 +1292,9 @@ function renderPedidos() {
   if (pedidos.length === 0) {
     vistaPedidosActual = 'pendientes';
     vistaPedidosSeleccionadaManual = false;
-    const subVacio = 'Pega un pedido arriba o importa un respaldo (código D1…).';
+    const subVacio = esSesionMensajero()
+      ? 'Aún no tienes pedidos asignados. Cuando un administrador te asigne entregas, aparecerán aquí y podrás ordenar la ruta en el mapa.'
+      : 'Pega un pedido desde WhatsApp en el cuadro de arriba.';
     lista.innerHTML = `<div class="empty-state" id="emptyState"><p>No hay pedidos aún</p><p style="font-size: 14px;">${escapeHtmlAttr(subVacio)}</p></div>`;
     actualizarPestañasListaPedidos([], [], [], []);
     renderListaOrdenEntrega();
@@ -1240,6 +1378,106 @@ function cambiarVistaPedidos(vista) {
   renderPedidos();
 }
 
+function htmlOpcionesMensajerosSelect(pedido) {
+  const actual = String(pedido.assignedTo || '');
+  let html = `<option value=""${actual === '' ? ' selected' : ''}>Sin asignar</option>`;
+  for (const m of listaMensajerosCache) {
+    const sel = actual === String(m.id) ? ' selected' : '';
+    html += `<option value="${m.id}"${sel}>${escapeHtmlTexto(m.username)}</option>`;
+  }
+  return html;
+}
+
+async function cargarMensajerosParaAsignacion() {
+  if (!esSesionAdmin()) return;
+  try {
+    const data = await apiJson('/api/users', { method: 'GET' });
+    listaMensajerosCache = (data.users || []).filter((u) => u.role === 'mensajero');
+    const bulk = document.getElementById('bulkAssignSelect');
+    if (bulk) {
+      bulk.innerHTML =
+        '<option value="">Elegir mensajero…</option>' +
+        listaMensajerosCache
+          .map((m) => `<option value="${m.id}">${escapeHtmlTexto(m.username)}</option>`)
+          .join('');
+    }
+  } catch (e) {
+    console.error(e);
+    listaMensajerosCache = [];
+  }
+}
+
+async function asignarPedidoDesdeSelect(selectEl) {
+  const pedidoId = Number(selectEl.getAttribute('data-asign-pedido-id'));
+  if (!Number.isFinite(pedidoId)) return;
+  const raw = String(selectEl.value || '').trim();
+  const prev = selectEl.getAttribute('data-prev-value') || '';
+  const userId = raw === '' ? null : Number(raw);
+  if (raw !== '' && !Number.isFinite(userId)) return;
+  try {
+    await apiJson(`/api/orders/${pedidoId}/assign`, {
+      method: 'PATCH',
+      body: JSON.stringify({ userId }),
+    });
+    selectEl.setAttribute('data-prev-value', raw);
+    await refrescarPedidosDesdeApi();
+    renderPedidos();
+    actualizarMarcadores();
+    mostrarToast('Asignación guardada', 'success');
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+    selectEl.value = prev || '';
+  }
+}
+
+async function asignarActivosBulkDesdeBarra() {
+  const sel = document.getElementById('bulkAssignSelect');
+  if (!sel) return;
+  const uid = Number(sel.value);
+  if (!Number.isFinite(uid)) {
+    mostrarToast('Elige un mensajero en la lista.', 'warning');
+    return;
+  }
+  const orderIds = pedidos.filter((p) => !p.entregado && !p.cancelado).map((p) => p.id);
+  if (orderIds.length === 0) {
+    mostrarToast('No hay pedidos activos para asignar.', 'info');
+    return;
+  }
+  try {
+    await apiJson('/api/orders/assign-bulk', {
+      method: 'POST',
+      body: JSON.stringify({ userId: uid, orderIds }),
+    });
+    await refrescarPedidosDesdeApi();
+    renderPedidos();
+    actualizarMarcadores();
+    mostrarToast(`${orderIds.length} pedido(s) asignado(s).`, 'success');
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+  }
+}
+
+function aplicarVisibilidadPorRol() {
+  const pegar = document.getElementById('sectionPegarPedido');
+  if (pegar) {
+    if (esSesionAdmin()) {
+      pegar.style.display = '';
+      pegar.removeAttribute('aria-hidden');
+    } else {
+      pegar.style.display = 'none';
+      pegar.setAttribute('aria-hidden', 'true');
+    }
+  }
+  const btnDel = document.getElementById('btnEliminarTodos');
+  if (btnDel) btnDel.style.display = esSesionAdmin() ? '' : 'none';
+  const bulk = document.getElementById('bulkAssignBar');
+  if (bulk) bulk.style.display = esSesionAdmin() ? 'flex' : 'none';
+  const btnMenuUsuarios = document.getElementById('btnMenuUsuarios');
+  if (btnMenuUsuarios) btnMenuUsuarios.style.display = esSesionAdmin() ? '' : 'none';
+  const btnMediosPagoMenu = document.getElementById('btnMediosPagoMenu');
+  if (btnMediosPagoMenu) btnMediosPagoMenu.style.display = esSesionMensajero() ? '' : 'none';
+}
+
 function crearSeccionPedidos(claseExtra, items, textoVacio) {
   const seccion = document.createElement('div');
   seccion.className = `pedidos-seccion ${claseExtra}`;
@@ -1263,7 +1501,7 @@ function crearTarjetaPedido(pedido, index) {
     + (pedido.entregado ? " entregado" : "")
     + (pedido.enCurso && !pedido.entregado ? " en-curso" : "")
     + (pedido.cancelado ? " cancelado" : "");
-  const adminUi = true;
+  const adminUi = esSesionAdmin();
   div.draggable = !pedido.entregado && !pedido.cancelado;
   div.dataset.index = index;
   div.dataset.id = pedido.id;
@@ -1279,19 +1517,24 @@ function crearTarjetaPedido(pedido, index) {
   const btnRegresarPendienteHtml = puedeRegresarAPendientes
     ? `<button type="button" class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendientes</button>`
     : '';
-  const btnCancelarHtml = (!pedido.entregado && !pedido.cancelado && etapaActual !== 'enRuta' && etapaActual !== 'enDestino')
-    ? `<button class="btn-warning" onclick="marcarCancelado(${index})"><i class="fa-solid fa-ban"></i> Cancelar pedido</button>`
-    : '';
-  const btnReactivarCanceladoHtml = pedido.cancelado
-    ? `<button class="btn-success" onclick="reactivarPedidoCancelado(${index})"><i class="fa-solid fa-rotate-left"></i> Reactivar pedido</button>`
-    : '';
+  const btnReactivarCanceladoHtml =
+    adminUi && pedido.cancelado
+      ? `<button class="btn-success" onclick="reactivarPedidoCancelado(${index})"><i class="fa-solid fa-rotate-left"></i> Reactivar pedido</button>`
+      : '';
   const textoBotonNotificar = pedido.notificadoEnCamino ? 'Volver a notificar' : 'Notificar en camino';
-  const btnNotificarHtml = etapaActual === 'notificar'
-    ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
-    : '';
-  const btnNotificarNuevamenteHtml = (!pedido.entregado && !pedido.cancelado && pedido.notificadoEnCamino && etapaActual !== 'enRuta' && etapaActual !== 'enDestino')
-    ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, { forzarReenvio: true })"><i class="fa-solid fa-bullhorn"></i> Notificar nuevamente al cliente</button>`
-    : '';
+  const btnNotificarHtml =
+    !adminUi && etapaActual === 'notificar'
+      ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
+      : '';
+  const btnNotificarNuevamenteHtml =
+    !adminUi &&
+    !pedido.entregado &&
+    !pedido.cancelado &&
+    pedido.notificadoEnCamino &&
+    etapaActual !== 'enRuta' &&
+    etapaActual !== 'enDestino'
+      ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, { forzarReenvio: true })"><i class="fa-solid fa-bullhorn"></i> Notificar nuevamente al cliente</button>`
+      : '';
   const btnEnrutarHtml = etapaActual === 'enrutar'
     ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar</button>`
     : '';
@@ -1317,7 +1560,7 @@ function crearTarjetaPedido(pedido, index) {
     <div class="pedido-header">
       <div class="pedido-numero">Pedido #${pedido.id}${estadoTexto}</div>
       <div class="pedido-header-btns">
-        ${!pedido.cancelado ? `<button class="btn-edit" onclick="editarPedido(${index})" style="padding: 5px 10px; font-size: 12px;"><i class="fa-solid fa-pen-to-square"></i> Editar</button>` : ''}
+        ${adminUi && !pedido.cancelado ? `<button class="btn-edit" onclick="editarPedido(${index})" style="padding: 5px 10px; font-size: 12px;"><i class="fa-solid fa-pen-to-square"></i> Editar</button>` : ''}
         ${adminUi ? `<button class="btn-danger btn-icon-only" onclick="eliminarPedido(${index})" title="Eliminar pedido" aria-label="Eliminar pedido"><i class="fa-solid fa-trash"></i></button>` : ''}
       </div>
     </div>
@@ -1330,6 +1573,11 @@ function crearTarjetaPedido(pedido, index) {
       </button><br>
       <strong class="pedido-etiqueta-productos">Productos:</strong><div class="pedido-productos-lista">${htmlProductosPedidoMultilinea(pedido)}</div><div class="pedido-fila-valor"><strong>Valor:</strong> $${valorFormato}</div>
     </div>
+    ${
+      adminUi
+        ? `<div class="pedido-asignacion"><label class="pedido-asignacion-label" for="asignSel_${pedido.id}"><i class="fa-solid fa-motorcycle"></i> Asignar a mensajero</label><select id="asignSel_${pedido.id}" class="pedido-asignacion-select" data-asign-pedido-id="${pedido.id}" data-prev-value="${escapeHtmlAttr(String(pedido.assignedTo || ''))}" onchange="asignarPedidoDesdeSelect(this)">${htmlOpcionesMensajerosSelect(pedido)}</select></div>`
+        : ''
+    }
     ${etapaActual === 'enDestino' ? `
     <div class="pedido-tools">
       <details class="pedido-dropdown">
@@ -1357,7 +1605,6 @@ function crearTarjetaPedido(pedido, index) {
       ${btnEnrutarNuevamenteHtml ? `<div class="pedido-actions-row">${btnEnrutarNuevamenteHtml}</div>` : ''}
       ${btnLlegueDestinoHtml ? `<div class="pedido-actions-row">${btnLlegueDestinoHtml}</div>` : ''}
       ${bloqueAccionesDestinoHtml}
-      ${btnCancelarHtml ? `<div class="pedido-actions-row">${btnCancelarHtml}</div>` : ''}
       ${btnReactivarCanceladoHtml ? `<div class="pedido-actions-row">${btnReactivarCanceladoHtml}</div>` : ''}
     </div>
     ${btnNoEntregadoHtml}
@@ -1742,6 +1989,10 @@ function handleDragEnd() {
 // --- Gestión de pedidos ---
 
 function eliminarPedido(index) {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede eliminar pedidos.', 'warning');
+    return;
+  }
   const pedido = pedidos[index];
   if (!pedido) return;
   const idRef = Number(pedido.id);
@@ -1831,6 +2082,10 @@ function marcarNoEntregado(index) {
 }
 
 function marcarCancelado(index) {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede cancelar pedidos.', 'warning');
+    return;
+  }
   const pedido = pedidos[index];
   if (!pedido || pedido.entregado || pedido.cancelado) return;
   pedido.cancelado = true;
@@ -1843,6 +2098,10 @@ function marcarCancelado(index) {
 }
 
 function reactivarPedidoCancelado(index) {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede reactivar pedidos.', 'warning');
+    return;
+  }
   const pedido = pedidos[index];
   if (!pedido || !pedido.cancelado) return;
   pedido.cancelado = false;
@@ -1856,6 +2115,10 @@ function reactivarPedidoCancelado(index) {
 }
 
 function eliminarTodos() {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede vaciar la lista.', 'warning');
+    return;
+  }
   mostrarModalDecision({
     titulo: 'Eliminar todos los pedidos',
     texto: '¿Estás seguro de eliminar TODOS los pedidos? Esta acción no se puede deshacer.',
@@ -1890,27 +2153,43 @@ let edicionPedidoPendiente = { index: null };
 
 function asegurarModalEditarPedido() {
   let modal = document.getElementById('modalEditarPedido');
-  if (modal) return modal;
+  if (modal && document.getElementById('editarPedidoNombre')) return modal;
+  if (modal) {
+    modal.remove();
+    modal = null;
+  }
 
   modal = document.createElement('div');
   modal.id = 'modalEditarPedido';
   modal.className = 'modal-no-entregado-backdrop';
   modal.innerHTML = `
-    <div class="modal-no-entregado-card">
+    <div class="modal-no-entregado-card modal-editar-pedido-card">
       <h3>Editar pedido</h3>
-      <p>Actualiza el valor o la URL del mapa:</p>
-      <div style="display:flex; flex-direction:column; gap:10px;">
-        <input id="editarPedidoValor" type="text" inputmode="numeric" placeholder="Valor del pedido (solo números)" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px;">
-        <input id="editarPedidoMapUrl" type="text" placeholder="URL del mapa" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px;">
+      <p class="modal-editar-pedido-ayuda">Puedes cambiar el nombre, teléfono, lista de productos (una línea por producto), valor y enlace del mapa.</p>
+      <div class="modal-editar-pedido-body">
+        <label class="modal-editar-pedido-label" for="editarPedidoNombre">Nombre</label>
+        <input id="editarPedidoNombre" type="text" autocomplete="name" class="modal-editar-pedido-input">
+        <label class="modal-editar-pedido-label" for="editarPedidoTelefono">Teléfono</label>
+        <input id="editarPedidoTelefono" type="text" inputmode="tel" autocomplete="tel" class="modal-editar-pedido-input">
+        <label class="modal-editar-pedido-label" for="editarPedidoProductos">Productos (uno por línea)</label>
+        <textarea id="editarPedidoProductos" class="modal-editar-pedido-textarea" rows="6" spellcheck="false"></textarea>
+        <label class="modal-editar-pedido-label" for="editarPedidoValor">Valor</label>
+        <input id="editarPedidoValor" type="text" inputmode="numeric" placeholder="Solo números" class="modal-editar-pedido-input">
+        <label class="modal-editar-pedido-label" for="editarPedidoMapUrl">URL del mapa</label>
+        <input id="editarPedidoMapUrl" type="text" placeholder="https://…" class="modal-editar-pedido-input">
       </div>
-      <div class="modal-no-entregado-actions" style="margin-top: 12px;">
-        <button class="btn-primary" onclick="guardarEdicionPedido()">Guardar cambios</button>
+      <div class="modal-no-entregado-actions modal-editar-pedido-acciones">
+        <button type="button" class="btn-primary" onclick="guardarEdicionPedido()">Guardar cambios</button>
       </div>
-      <button class="modal-no-entregado-close" onclick="cerrarModalEditarPedido()">Cerrar</button>
+      <button type="button" class="modal-no-entregado-close" onclick="cerrarModalEditarPedido()">Cerrar</button>
     </div>
   `;
   document.body.appendChild(modal);
-  vincularFormateoMilesInput(document.getElementById('editarPedidoValor'));
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) cerrarModalEditarPedido();
+  });
+  const v = document.getElementById('editarPedidoValor');
+  if (v) vincularFormateoMilesInput(v);
   return modal;
 }
 
@@ -1929,15 +2208,24 @@ function guardarEdicionPedido() {
     return;
   }
 
+  const inputNombre = document.getElementById('editarPedidoNombre');
+  const inputTel = document.getElementById('editarPedidoTelefono');
+  const taProd = document.getElementById('editarPedidoProductos');
   const inputValor = document.getElementById('editarPedidoValor');
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
+
+  pedido.nombre = inputNombre ? String(inputNombre.value || '').trim() : '';
+  pedido.telefono = inputTel ? String(inputTel.value || '').trim() : '';
+  if (taProd) {
+    pedido.productos = productosPedidoDesdeTextoPlano(taProd.value);
+  }
+
   const valorIngresado = inputValor ? String(inputValor.value || '') : '';
   const valorLimpio = valorIngresado.replace(/[^\d]/g, '');
-  const nuevaUrl = inputMapUrl ? String(inputMapUrl.value || '').trim() : '';
-
   if (valorLimpio !== '') {
     pedido.valor = valorLimpio;
   }
+  const nuevaUrl = inputMapUrl ? String(inputMapUrl.value || '').trim() : '';
   if (nuevaUrl !== '') {
     pedido.mapUrl = nuevaUrl;
     const ext = extraerCoordenadas(nuevaUrl);
@@ -1948,6 +2236,7 @@ function guardarEdicionPedido() {
     }
   }
 
+  normalizarPedidoEnMemoria(pedido);
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -1955,12 +2244,22 @@ function guardarEdicionPedido() {
 }
 
 function editarPedido(index) {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede editar estos datos.', 'warning');
+    return;
+  }
   const pedido = pedidos[index];
   if (!pedido) return;
   edicionPedidoPendiente = { index };
   const modal = asegurarModalEditarPedido();
+  const inputNombre = document.getElementById('editarPedidoNombre');
+  const inputTel = document.getElementById('editarPedidoTelefono');
+  const taProd = document.getElementById('editarPedidoProductos');
   const inputValor = document.getElementById('editarPedidoValor');
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
+  if (inputNombre) inputNombre.value = String(pedido.nombre || '');
+  if (inputTel) inputTel.value = String(pedido.telefono || '');
+  if (taProd) taProd.value = lineasProductosPedidoNormalizadas(pedido).join('\n');
   if (inputValor) inputValor.value = formatearDigitosMilesEsCo(String(pedido.valor || ''));
   if (inputMapUrl) inputMapUrl.value = String(pedido.mapUrl || '');
   modal.style.display = 'flex';
@@ -4084,6 +4383,10 @@ async function importarPedidosDesdeTextoPlano(texto, origen = 'texto pegado') {
 }
 
 function abrirModalImportarRespaldo() {
+  if (sesionUsuario && !esSesionAdmin()) {
+    mostrarToast('Solo un administrador puede importar pedidos.', 'warning');
+    return;
+  }
   cerrarMenuUsuario();
   let modal = document.getElementById('modalImportarRespaldo');
   if (!modal) {
@@ -4145,7 +4448,7 @@ function copiarPayloadQrPedidos() {
     navigator.clipboard.writeText(texto).then(
       () =>
         mostrarToast(
-          'Copiado. En el otro equipo: pégalo en Importar respaldo (código D1…).',
+          'Copiado. En el otro equipo pega el código para restaurar pedidos (D1…).',
           'success',
           8000
         ),
@@ -4247,14 +4550,30 @@ function cargarPedidosDesdeLocalStorage() {
   }
 }
 
-function iniciarApp() {
+let authHayUsuarios = false;
+
+async function iniciarApp() {
+  if (!sesionUsuario) return;
+  aplicarVisibilidadPorRol();
   exponerDebugAppDelivery();
-  cargarPedidosDesdeLocalStorage();
+  try {
+    await refrescarPedidosDesdeApi();
+  } catch (e) {
+    console.error(e);
+    mostrarToast(
+      `No se pudieron cargar los pedidos del servidor: ${String(e.message || e)}`,
+      'error',
+      9000
+    );
+    cargarPedidosDesdeLocalStorage();
+  }
+  if (esSesionAdmin()) {
+    await cargarMensajerosParaAsignacion();
+  }
+  aplicarVisibilidadPorRol();
+
   configurarArrastrePointerOrdenEntrega();
   configurarFabNavegacionScroll();
-
-  document.documentElement.classList.remove('auth-layout');
-  document.body.classList.remove('auth-layout');
 
   cargarConfigNotificacionEnUI();
   const modalConfig = document.getElementById('modalConfigNotificacion');
@@ -4269,6 +4588,14 @@ function iniciarApp() {
     if (wrap && !wrap.contains(ev.target)) cerrarMenuUsuario();
   });
 
+  const bulkBtn = document.getElementById('bulkAssignBtn');
+  if (bulkBtn && !bulkBtn.dataset.bound) {
+    bulkBtn.dataset.bound = '1';
+    bulkBtn.addEventListener('click', () => {
+      void asignarActivosBulkDesdeBarra();
+    });
+  }
+
   renderPedidos();
   requestAnimationFrame(() => {
     try {
@@ -4282,6 +4609,755 @@ function iniciarApp() {
       console.error(e);
     }
   });
+  try {
+    await restaurarVistaAppSesionTrasInicio();
+  } catch (e) {
+    console.error(e);
+  }
 }
 
-document.addEventListener('DOMContentLoaded', iniciarApp);
+function cerrarSesionApp() {
+  cerrarMenuUsuario();
+  setAuthToken('');
+  sesionUsuario = null;
+  try {
+    sessionStorage.removeItem(AUTH_TAB_SESSION_KEY);
+    sessionStorage.removeItem(VISTA_APP_SESSION_KEY);
+  } catch (_e) {}
+  window.location.reload();
+}
+
+async function entrarAppConSesion(user) {
+  sesionUsuario = user;
+  document.documentElement.classList.remove('auth-layout');
+  document.body.classList.remove('auth-layout');
+  const pa = document.getElementById('pantallaAuth');
+  const main = document.getElementById('mainApp');
+  if (pa) pa.style.display = 'none';
+  if (main) main.style.display = '';
+  const el = document.getElementById('appHeaderUsuario');
+  if (el) {
+    el.textContent = `${user.username} · ${user.role === 'admin' ? 'Administrador' : 'Mensajero'}`;
+  }
+  aplicarVisibilidadPorRol();
+  await iniciarApp();
+}
+
+function ocultarBloqueCorreoPendiente() {
+  const principal = document.getElementById('authBloquePrincipal');
+  const post = document.getElementById('authBloquePostRegistro');
+  window.__pendingVerifyEmail = '';
+  if (post) post.style.display = 'none';
+  if (principal) principal.style.display = 'block';
+}
+
+function mostrarBloqueCorreoPendiente(email, mensaje) {
+  const principal = document.getElementById('authBloquePrincipal');
+  const post = document.getElementById('authBloquePostRegistro');
+  const txt = document.getElementById('authPostRegText');
+  const inp = document.getElementById('authPendingEmail');
+  const errG = document.getElementById('authErrorGlobal');
+  const errF = document.getElementById('authFormError');
+  if (errF) errF.textContent = '';
+  window.__pendingVerifyEmail = String(email || '').trim();
+  if (txt) txt.textContent = mensaje || '';
+  if (inp) inp.value = window.__pendingVerifyEmail;
+  if (errG) errG.textContent = '';
+  const blkReset = document.getElementById('authBloqueReset');
+  if (blkReset) blkReset.style.display = 'none';
+  if (principal) principal.style.display = 'none';
+  if (post) post.style.display = 'block';
+}
+
+function switchAuthTab(which) {
+  ocultarBloqueCorreoPendiente();
+  const tabLogin = document.getElementById('authTabLogin');
+  const tabReg = document.getElementById('authTabRegistro');
+  const formLogin = document.getElementById('formLogin');
+  const formReg = document.getElementById('formRegistro');
+  const esLogin = which === 'login';
+  if (tabLogin) tabLogin.classList.toggle('active', esLogin);
+  if (tabReg) tabReg.classList.toggle('active', !esLogin);
+  if (formLogin) formLogin.style.display = esLogin ? 'block' : 'none';
+  if (formReg) formReg.style.display = esLogin ? 'none' : 'block';
+  if (!esLogin) actualizarTextosRegistroAuth();
+  if (which === 'login' || which === 'registro') {
+    try {
+      sessionStorage.setItem(AUTH_TAB_SESSION_KEY, which);
+    } catch (_e) {}
+  }
+}
+
+function correoPareceValido(correo) {
+  const e = String(correo || '').trim().toLowerCase();
+  if (e.length < 5 || e.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+async function onSubmitLogin(ev) {
+  ev.preventDefault();
+  const login = String(document.getElementById('loginIdentifier')?.value || '').trim();
+  const p = String(document.getElementById('loginPass')?.value || '');
+  const err = document.getElementById('authFormError');
+  if (err) err.textContent = '';
+  if (!correoPareceValido(login)) {
+    if (err) err.textContent = 'Escribe el correo con el que te registraste.';
+    return;
+  }
+  try {
+    const data = await apiJson('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ login, password: p }),
+    });
+    setAuthToken(data.token);
+    await entrarAppConSesion(data.user);
+  } catch (e) {
+    if (err) err.textContent = String(e.message || e);
+    if (e.code === 'EMAIL_NOT_VERIFIED') {
+      const emailGuess = correoPareceValido(login) ? login : '';
+      mostrarBloqueCorreoPendiente(
+        emailGuess,
+        'Tu cuenta existe, pero el correo aún no está confirmado. Revisa tu bandeja (y spam) o reenvía el enlace.'
+      );
+    }
+  }
+}
+
+async function onSubmitRegistro(ev) {
+  ev.preventDefault();
+  const u = String(document.getElementById('regUser')?.value || '').trim();
+  const email = String(document.getElementById('regEmail')?.value || '').trim();
+  const p = String(document.getElementById('regPass')?.value || '');
+  const err = document.getElementById('authFormError');
+  if (err) err.textContent = '';
+  if (!u) {
+    if (err) err.textContent = 'Indica un nombre para mostrar en la app.';
+    return;
+  }
+  if (!correoPareceValido(email)) {
+    if (err) err.textContent = 'Indica un correo electrónico válido. Cada correo solo puede usarse en una cuenta.';
+    return;
+  }
+  try {
+    const data = await apiJson('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username: u, email, password: p }),
+    });
+    if (data.needsEmailVerification) {
+      authHayUsuarios = true;
+      actualizarTextosRegistroAuth();
+      mostrarBloqueCorreoPendiente(
+        email,
+        data.message ||
+          'Te enviamos un correo con un enlace para confirmar tu cuenta. Cuando lo abras, podrás iniciar sesión.'
+      );
+      return;
+    }
+    setAuthToken(data.token);
+    authHayUsuarios = true;
+    await entrarAppConSesion(data.user);
+  } catch (e) {
+    if (err) err.textContent = String(e.message || e);
+    if (e.detail) mostrarToast(String(e.detail), 'warning', 8000);
+  }
+}
+
+function actualizarTextosRegistroAuth() {
+  const btn = document.getElementById('regSubmitBtn');
+  const lab = document.getElementById('regUserLabel');
+  if (authHayUsuarios) {
+    if (btn) btn.textContent = 'Registrarse';
+    if (lab) lab.textContent = 'Nombre en la app';
+  } else {
+    if (btn) btn.textContent = 'Crear administrador (primer usuario)';
+    if (lab) lab.textContent = 'Nombre del administrador en la app';
+  }
+}
+
+let ultimoEnlaceRecuperacion = '';
+
+function abrirModalRecuperarClave() {
+  const modal = document.getElementById('modalRecuperarClave');
+  const inp = document.getElementById('recuperarEmail');
+  const err = document.getElementById('modalRecuperarError');
+  const wrap = document.getElementById('modalRecuperarLinkWrap');
+  const urlBox = document.getElementById('modalRecuperarUrlText');
+  const sinMail = document.getElementById('modalRecuperarSinMail');
+  if (err) err.textContent = '';
+  if (sinMail) {
+    sinMail.style.display = 'none';
+    sinMail.textContent = '';
+  }
+  if (wrap) wrap.style.display = 'none';
+  if (urlBox) urlBox.textContent = '';
+  ultimoEnlaceRecuperacion = '';
+  if (inp) inp.value = '';
+  if (modal) {
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden', 'false');
+  }
+  void actualizarAvisoCorreoEnModalRecuperar();
+}
+
+async function actualizarAvisoCorreoEnModalRecuperar() {
+  const sinMail = document.getElementById('modalRecuperarSinMail');
+  if (!sinMail) return;
+  try {
+    const r = await apiFetch('/api/auth/status');
+    const s = await r.json();
+    if (!s.mailConfigured) {
+      sinMail.style.display = 'block';
+      sinMail.textContent =
+        'El servidor no tiene configurado el envío de correo (en .env: MAIL_FROM y RESEND_API_KEY, o SMTP). ' +
+        'Nadie recibirá enlaces hasta que el administrador lo configure. Revisa la consola donde corre «npm start».';
+    }
+  } catch (_e) {
+    /* sin bloquear el modal */
+  }
+}
+
+function cerrarModalRecuperarClave() {
+  const modal = document.getElementById('modalRecuperarClave');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden', 'true');
+  }
+}
+
+async function enviarSolicitudRecuperarClave() {
+  const inp = document.getElementById('recuperarEmail');
+  const err = document.getElementById('modalRecuperarError');
+  const wrap = document.getElementById('modalRecuperarLinkWrap');
+  const urlBox = document.getElementById('modalRecuperarUrlText');
+  if (err) err.textContent = '';
+  const email = String(inp?.value || '').trim();
+  if (!correoPareceValido(email)) {
+    if (err) err.textContent = 'Escribe un correo válido.';
+    return;
+  }
+  try {
+    const data = await apiJson('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+    ultimoEnlaceRecuperacion = '';
+    if (wrap) wrap.style.display = 'none';
+    if (urlBox) urlBox.textContent = '';
+    mostrarToast(data.message || 'Revisa tu correo (y la carpeta de spam).', 'success', 9000);
+    cerrarModalRecuperarClave();
+  } catch (e) {
+    const det = e.detail ? ` ${String(e.detail)}` : '';
+    const texto = `${String(e.message || e)}${det}`.trim();
+    if (err) err.textContent = texto;
+    const tipoToast = e.status === 404 ? 'warning' : 'error';
+    mostrarToast(texto, tipoToast, e.status === 404 ? 7000 : 12000);
+  }
+}
+
+async function copiarEnlaceRecuperar() {
+  if (!ultimoEnlaceRecuperacion) return;
+  try {
+    await navigator.clipboard.writeText(ultimoEnlaceRecuperacion);
+    mostrarToast('Enlace copiado al portapapeles', 'success');
+  } catch (_e) {
+    mostrarToast('No se pudo copiar automáticamente; selecciona el texto del enlace.', 'warning');
+  }
+}
+
+function inicializarVistaResetDesdeUrl() {
+  const p = new URLSearchParams(window.location.search);
+  const t = p.get('reset');
+  if (!t) return false;
+  window.__passwordResetToken = decodeURIComponent(t);
+  const main = document.getElementById('authBloquePrincipal');
+  const blk = document.getElementById('authBloqueReset');
+  const post = document.getElementById('authBloquePostRegistro');
+  if (post) post.style.display = 'none';
+  if (main) main.style.display = 'none';
+  if (blk) blk.style.display = 'block';
+  return true;
+}
+
+function cancelarVistaResetPassword() {
+  window.__passwordResetToken = '';
+  const main = document.getElementById('authBloquePrincipal');
+  const blk = document.getElementById('authBloqueReset');
+  if (blk) blk.style.display = 'none';
+  if (main) main.style.display = 'block';
+  const errR = document.getElementById('authResetError');
+  if (errR) errR.textContent = '';
+  try {
+    history.replaceState({}, '', window.location.pathname || '/');
+  } catch (_e) {}
+}
+
+async function reenviarCorreoVerificacionDesdeUi() {
+  const inp = document.getElementById('authPendingEmail');
+  const email = String(inp?.value || window.__pendingVerifyEmail || '').trim();
+  const errG = document.getElementById('authErrorGlobal');
+  if (!correoPareceValido(email)) {
+    if (errG) errG.textContent = 'Escribe un correo válido en el campo de arriba.';
+    return;
+  }
+  if (errG) errG.textContent = '';
+  try {
+    const data = await apiJson('/api/auth/resend-verification', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+    mostrarToast(data.message || 'Listo.', 'success', 8000);
+  } catch (e) {
+    if (errG) errG.textContent = String(e.message || e);
+    if (e.detail) mostrarToast(String(e.detail), 'warning', 8000);
+  }
+}
+
+async function confirmarCorreoDesdeUrlSiAplica() {
+  const p = new URLSearchParams(window.location.search);
+  const v = p.get('verify');
+  if (!v) return false;
+  const errGlobal = document.getElementById('authErrorGlobal');
+  try {
+    const data = await apiJson('/api/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ token: decodeURIComponent(v) }),
+    });
+    if (errGlobal) errGlobal.textContent = data.message || 'Correo confirmado.';
+    mostrarToast(data.message || 'Correo confirmado. Ya puedes iniciar sesión.', 'success');
+  } catch (e) {
+    if (errGlobal) errGlobal.textContent = String(e.message || e);
+    mostrarToast(String(e.message || e), 'error', 9000);
+  }
+  try {
+    history.replaceState({}, '', window.location.pathname || '/');
+  } catch (_e) {}
+  return true;
+}
+
+async function guardarNuevaContrasenaDesdeReset() {
+  const token = window.__passwordResetToken;
+  const err = document.getElementById('authResetError');
+  const p1 = String(document.getElementById('resetPassNueva')?.value || '');
+  const p2 = String(document.getElementById('resetPassNueva2')?.value || '');
+  if (err) err.textContent = '';
+  if (!token) {
+    if (err) err.textContent = 'Falta el enlace de recuperación. Solicita uno nuevo.';
+    return;
+  }
+  if (p1.length < 6) {
+    if (err) err.textContent = 'La contraseña debe tener al menos 6 caracteres.';
+    return;
+  }
+  if (p1 !== p2) {
+    if (err) err.textContent = 'Las contraseñas no coinciden.';
+    return;
+  }
+  try {
+    const data = await apiJson('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, password: p1 }),
+    });
+    setAuthToken(data.token);
+    cancelarVistaResetPassword();
+    await entrarAppConSesion(data.user);
+  } catch (e) {
+    if (err) err.textContent = String(e.message || e);
+  }
+}
+
+function etiquetaEstadoPedidoResumida(p) {
+  if (!p) return '—';
+  if (p.cancelado) return 'Cancelado';
+  if (p.entregado) return p.noEntregado ? 'No entregado' : 'Entregado';
+  if (p.enCurso) return 'En ruta';
+  return 'Pendiente';
+}
+
+function pedidosAsignadosAMensajero(userId) {
+  const key = String(userId ?? '');
+  return pedidos.filter((p) => String(p.assignedTo || '') === key);
+}
+
+function renderPanelAsignacionesMensajeros() {
+  const host = document.getElementById('usuariosRolesAsignaciones');
+  if (!host) return;
+  if (!listaMensajerosCache.length) {
+    host.innerHTML =
+      '<p class="usuarios-roles-asignaciones-vacio">No hay mensajeros registrados. Crea usuarios con rol mensajero para ver asignaciones aquí.</p>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const m of listaMensajerosCache) {
+    const asignados = pedidosAsignadosAMensajero(m.id);
+    const card = document.createElement('article');
+    card.className = 'usuarios-roles-mensajero-card';
+    const h = document.createElement('h4');
+    h.className = 'usuarios-roles-mensajero-nombre';
+    h.textContent = String(m.username || `Usuario #${m.id}`);
+    card.appendChild(h);
+    if (asignados.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'usuarios-roles-sin-pedidos';
+      p.textContent = 'Ningún pedido asignado en este momento.';
+      card.appendChild(p);
+    } else {
+      const ul = document.createElement('ul');
+      ul.className = 'usuarios-roles-pedidos-lista';
+      for (const pedido of asignados) {
+        const li = document.createElement('li');
+        const val = formatearDigitosMilesEsCo(String(pedido.valor || '0'));
+        const nombre = escapeHtmlTexto(String(pedido.nombre || 'Sin nombre'));
+        const estado = escapeHtmlTexto(etiquetaEstadoPedidoResumida(pedido));
+        li.innerHTML = `<span class="usuarios-roles-pedido-id">#${escapeHtmlTexto(String(pedido.id))}</span> <span class="usuarios-roles-pedido-nombre">${nombre}</span> <span class="usuarios-roles-pedido-meta">${estado} · $${escapeHtmlTexto(val)}</span>`;
+        ul.appendChild(li);
+      }
+      card.appendChild(ul);
+    }
+    frag.appendChild(card);
+  }
+  host.innerHTML = '';
+  host.appendChild(frag);
+}
+
+async function actualizarPanelAsignacionesMensajerosDesdeApi() {
+  try {
+    await refrescarPedidosDesdeApi();
+    renderPedidos();
+    actualizarMarcadores();
+  } catch (_e) {}
+  renderPanelAsignacionesMensajeros();
+}
+
+function quitarEstiloPreRestoreUsuariosRoles() {
+  const st = document.getElementById(PRE_RESTORE_USUARIOS_ROLES_STYLE_ID);
+  if (st) st.remove();
+}
+
+/** Si el `<head>` ocultó la vista principal (anti-parpadeo), revierte el DOM con estilos en línea. */
+function asegurarVistaPrincipalVisibleTrasPerderPreRestore() {
+  const page = document.getElementById('pageUsuariosRoles');
+  const principal = document.getElementById('appVistaPrincipal');
+  if (page) {
+    page.style.display = 'none';
+    page.setAttribute('aria-hidden', 'true');
+  }
+  if (principal) {
+    principal.style.display = '';
+    principal.removeAttribute('aria-hidden');
+  }
+}
+
+function guardarVistaAppSesionUsuariosRoles() {
+  try {
+    sessionStorage.setItem(VISTA_APP_SESSION_KEY, VISTA_APP_USUARIOS_ROLES);
+  } catch (_e) {}
+}
+
+function limpiarVistaAppSesion() {
+  try {
+    sessionStorage.removeItem(VISTA_APP_SESSION_KEY);
+  } catch (_e) {}
+}
+
+function vistaAppSesionEsUsuariosRoles() {
+  try {
+    return sessionStorage.getItem(VISTA_APP_SESSION_KEY) === VISTA_APP_USUARIOS_ROLES;
+  } catch (_e) {
+    return false;
+  }
+}
+
+async function mostrarUiPaginaUsuariosRoles() {
+  try {
+    const legacy = document.getElementById('modalUsuariosAdmin');
+    if (legacy) legacy.remove();
+    const page = document.getElementById('pageUsuariosRoles');
+    const principal = document.getElementById('appVistaPrincipal');
+    if (principal) {
+      principal.style.display = 'none';
+      principal.setAttribute('aria-hidden', 'true');
+    }
+    if (page) {
+      page.style.display = 'block';
+      page.removeAttribute('aria-hidden');
+    }
+    await refrescarListaUsuariosPagina();
+    scrollToTopApp();
+  } finally {
+    quitarEstiloPreRestoreUsuariosRoles();
+  }
+}
+
+async function restaurarVistaAppSesionTrasInicio() {
+  if (!esSesionAdmin()) {
+    limpiarVistaAppSesion();
+    quitarEstiloPreRestoreUsuariosRoles();
+    asegurarVistaPrincipalVisibleTrasPerderPreRestore();
+    return;
+  }
+  if (!vistaAppSesionEsUsuariosRoles()) {
+    quitarEstiloPreRestoreUsuariosRoles();
+    return;
+  }
+  await mostrarUiPaginaUsuariosRoles();
+}
+
+function cerrarPaginaUsuariosRoles() {
+  limpiarVistaAppSesion();
+  const page = document.getElementById('pageUsuariosRoles');
+  const principal = document.getElementById('appVistaPrincipal');
+  if (page) {
+    page.style.display = 'none';
+    page.setAttribute('aria-hidden', 'true');
+  }
+  if (principal) {
+    principal.style.display = '';
+    principal.removeAttribute('aria-hidden');
+  }
+  scrollToTopApp();
+}
+
+async function refrescarListaUsuariosPagina() {
+  const host = document.getElementById('usuariosRolesLista');
+  if (!host) return;
+  host.innerHTML = '<p class="modal-usuarios-cargando">Cargando…</p>';
+  try {
+    const data = await apiJson('/api/users', { method: 'GET' });
+    const users = data.users || [];
+    if (users.length === 0) {
+      host.innerHTML = '<p>Sin usuarios.</p>';
+    } else {
+    host.innerHTML = '';
+    const tabla = document.createElement('table');
+    tabla.className = 'modal-usuarios-tabla';
+    tabla.innerHTML =
+      '<thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th class="modal-usuarios-th-acciones" scope="col"><span class="visually-hidden">Acciones</span></th></tr></thead><tbody></tbody>';
+    const tb = tabla.querySelector('tbody');
+    for (const u of users) {
+      const tr = document.createElement('tr');
+      const soy = sesionUsuario && Number(u.id) === Number(sesionUsuario.id);
+      const mail = u.email ? escapeHtmlTexto(u.email) : '<span class="modal-usuarios-sin-correo">—</span>';
+      tr.innerHTML = `
+        <td>${escapeHtmlTexto(u.username)}${soy ? ' <span class="modal-usuarios-yo">(tú)</span>' : ''}</td>
+        <td class="modal-usuarios-correo-celda">${mail}</td>
+        <td>
+          <select class="modal-usuarios-rol-select" data-user-id="${u.id}" ${soy ? 'disabled' : ''}>
+            <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Administrador</option>
+            <option value="mensajero"${u.role === 'mensajero' ? ' selected' : ''}>Mensajero</option>
+          </select>
+        </td>
+        <td class="modal-usuarios-acciones-celda"></td>`;
+      if (!soy) {
+        const sel = tr.querySelector('select');
+        sel.addEventListener('change', () => {
+          void cambiarRolUsuario(Number(u.id), sel.value);
+        });
+        const accTd = tr.querySelector('.modal-usuarios-acciones-celda');
+        const btnDel = document.createElement('button');
+        btnDel.type = 'button';
+        btnDel.className = 'modal-usuarios-btn-eliminar';
+        btnDel.title = 'Eliminar usuario';
+        btnDel.setAttribute('aria-label', 'Eliminar usuario');
+        btnDel.innerHTML = '<i class="fa-solid fa-trash" aria-hidden="true"></i>';
+        btnDel.addEventListener('click', () => {
+          void eliminarUsuarioAdminDesdeModal(Number(u.id), String(u.username || ''));
+        });
+        accTd.appendChild(btnDel);
+      }
+      tb.appendChild(tr);
+    }
+    host.appendChild(tabla);
+    }
+  } catch (e) {
+    host.innerHTML = `<p class="modal-usuarios-error">${escapeHtmlTexto(String(e.message || e))}</p>`;
+  }
+  await cargarMensajerosParaAsignacion();
+  renderPanelAsignacionesMensajeros();
+}
+
+async function cambiarRolUsuario(userId, role) {
+  try {
+    await apiJson(`/api/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    });
+    await refrescarListaUsuariosPagina();
+    renderPedidos();
+    actualizarMarcadores();
+    mostrarToast('Rol actualizado', 'success');
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+    await refrescarListaUsuariosPagina();
+  }
+}
+
+async function eliminarUsuarioAdminDesdeModal(userId, nombreVisible) {
+  const etiqueta = nombreVisible.trim() || `usuario #${userId}`;
+  const ok = window.confirm(
+    `¿Eliminar la cuenta «${etiqueta}»?\n\nLos pedidos que tuviera asignados ese mensajero quedarán sin asignar. Esta acción no se puede deshacer.`
+  );
+  if (!ok) return;
+  try {
+    await apiJson(`/api/users/${userId}`, { method: 'DELETE' });
+    mostrarToast('Usuario eliminado', 'success');
+    try {
+      await refrescarPedidosDesdeApi();
+    } catch (_e) {}
+    await refrescarListaUsuariosPagina();
+    renderPedidos();
+    actualizarMarcadores();
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+    await refrescarListaUsuariosPagina();
+  }
+}
+
+async function crearUsuarioDesdeModal() {
+  const u = String(document.getElementById('nuevoUsuarioNombre')?.value || '').trim();
+  const email = String(document.getElementById('nuevoUsuarioEmail')?.value || '').trim();
+  const p = String(document.getElementById('nuevoUsuarioPass')?.value || '');
+  const role = String(document.getElementById('nuevoUsuarioRol')?.value || 'mensajero');
+  if (!u) {
+    mostrarToast('Indica un nombre en la app.', 'warning');
+    return;
+  }
+  if (!correoPareceValido(email)) {
+    mostrarToast('Indica un correo electrónico válido y que no esté ya registrado.', 'warning');
+    return;
+  }
+  try {
+    await apiJson('/api/users', {
+      method: 'POST',
+      body: JSON.stringify({ username: u, email, password: p, role }),
+    });
+    document.getElementById('nuevoUsuarioNombre').value = '';
+    const em = document.getElementById('nuevoUsuarioEmail');
+    if (em) em.value = '';
+    document.getElementById('nuevoUsuarioPass').value = '';
+    await refrescarListaUsuariosPagina();
+    renderPedidos();
+    mostrarToast('Usuario creado', 'success');
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+  }
+}
+
+async function abrirPaginaUsuariosRoles() {
+  cerrarMenuUsuario();
+  if (!esSesionAdmin()) return;
+  guardarVistaAppSesionUsuariosRoles();
+  await mostrarUiPaginaUsuariosRoles();
+}
+
+async function iniciarFlujoAuth() {
+  const pa = document.getElementById('pantallaAuth');
+  const main = document.getElementById('mainApp');
+  const errGlobal = document.getElementById('authErrorGlobal');
+  if (errGlobal) errGlobal.textContent = '';
+
+  const params = new URLSearchParams(window.location.search);
+  const enVistaResetUrl = !!params.get('reset');
+  const token = getAuthToken();
+
+  /* Con sesión guardada: validar antes de mostrar login (evita parpadeo al recargar). */
+  if (token && !enVistaResetUrl) {
+    try {
+      if (params.get('verify')) {
+        await confirmarCorreoDesdeUrlSiAplica();
+      }
+      const me = await apiJson('/api/me', { method: 'GET' });
+      await entrarAppConSesion(me.user);
+      return;
+    } catch (_e) {
+      setAuthToken('');
+    }
+  }
+
+  document.documentElement.classList.add('auth-layout');
+  document.body.classList.add('auth-layout');
+  if (main) main.style.display = 'none';
+  /* No mostrar #pantallaAuth hasta aplicar la pestaña correcta (evita ver “Iniciar sesión” y luego “Registro”). */
+
+  let status;
+  try {
+    const r = await apiFetch('/api/auth/status');
+    status = await r.json();
+  } catch (_e) {
+    if (errGlobal) {
+      errGlobal.textContent =
+        'No se pudo contactar el servidor. Ejecuta en la carpeta del proyecto: npm install y npm start. Luego abre http://localhost:3847 en el navegador.';
+    }
+    if (pa) pa.style.display = 'flex';
+    return;
+  }
+
+  authHayUsuarios = !!status.hasUsers;
+  actualizarTextosRegistroAuth();
+
+  const huboVerifyEnUrl = await confirmarCorreoDesdeUrlSiAplica();
+  if (huboVerifyEnUrl) {
+    switchAuthTab('login');
+  }
+
+  const enVistaReset = inicializarVistaResetDesdeUrl();
+  if (!enVistaReset) {
+    if (huboVerifyEnUrl) {
+      /* ya en pestaña login */
+    } else if (authHayUsuarios) {
+      let tabGuardada = null;
+      try {
+        tabGuardada = sessionStorage.getItem(AUTH_TAB_SESSION_KEY);
+      } catch (_e) {}
+      if (tabGuardada === 'registro' || tabGuardada === 'login') {
+        switchAuthTab(tabGuardada);
+      } else {
+        switchAuthTab('login');
+      }
+    } else {
+      switchAuthTab('registro');
+    }
+  }
+
+  if (pa) pa.style.display = 'flex';
+
+  if (!window.__authFlujoInicializado) {
+    window.__authFlujoInicializado = true;
+    const tabLogin = document.getElementById('authTabLogin');
+    const tabReg = document.getElementById('authTabRegistro');
+    if (tabLogin) tabLogin.addEventListener('click', () => switchAuthTab('login'));
+    if (tabReg) tabReg.addEventListener('click', () => switchAuthTab('registro'));
+    const fl = document.getElementById('formLogin');
+    if (fl) fl.addEventListener('submit', onSubmitLogin);
+    const fr = document.getElementById('formRegistro');
+    if (fr) fr.addEventListener('submit', onSubmitRegistro);
+    document.getElementById('btnRecuperarClave')?.addEventListener('click', () => abrirModalRecuperarClave());
+    document.getElementById('btnCerrarModalRecuperar')?.addEventListener('click', () => cerrarModalRecuperarClave());
+    document.getElementById('btnEnviarRecuperar')?.addEventListener('click', () => {
+      void enviarSolicitudRecuperarClave();
+    });
+    document.getElementById('btnCopiarEnlaceRecuperar')?.addEventListener('click', () => {
+      void copiarEnlaceRecuperar();
+    });
+    document.getElementById('btnGuardarResetPass')?.addEventListener('click', () => {
+      void guardarNuevaContrasenaDesdeReset();
+    });
+    document.getElementById('btnCancelarReset')?.addEventListener('click', () => cancelarVistaResetPassword());
+    document.getElementById('btnAuthReenviarVerificacion')?.addEventListener('click', () => {
+      void reenviarCorreoVerificacionDesdeUi();
+    });
+    document.getElementById('btnAuthPostRegVolverLogin')?.addEventListener('click', () => {
+      ocultarBloqueCorreoPendiente();
+      switchAuthTab('login');
+    });
+    const modalRec = document.getElementById('modalRecuperarClave');
+    if (modalRec) {
+      modalRec.addEventListener('click', (e) => {
+        if (e.target === modalRec) cerrarModalRecuperarClave();
+      });
+    }
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  void iniciarFlujoAuth();
+});
