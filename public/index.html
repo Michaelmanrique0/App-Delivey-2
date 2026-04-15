@@ -66,6 +66,11 @@
     <div id="authBloquePostRegistro" class="auth-bloque-reset" style="display:none;">
       <h2 class="auth-subtitulo">Confirma tu correo</h2>
       <p id="authPostRegText" class="auth-hint"></p>
+      <div id="authPostRegLinkWrap" class="auth-recuperar-link-wrap" style="display:none;">
+        <p class="auth-field-help">En este modo no se envía correo. Abre o copia este enlace para confirmar tu cuenta:</p>
+        <div class="auth-recuperar-url-box" id="authPostRegUrlText"></div>
+        <button type="button" class="btn-primary auth-submit" id="btnCopiarEnlaceVerificacion">Copiar enlace</button>
+      </div>
       <div class="auth-form auth-form--stacked">
         <div class="auth-field-group">
           <label for="authPendingEmail">Correo (puedes corregirlo si hubo un error)</label>
@@ -98,7 +103,7 @@
 <div id="modalRecuperarClave" class="modal-no-entregado-backdrop" style="display:none;" aria-hidden="true">
   <div class="modal-no-entregado-card auth-modal-recuperar">
     <h3>Recuperar contraseña</h3>
-    <p class="auth-modal-ayuda">Te enviaremos un correo con un enlace para elegir una contraseña nueva (válido 1 hora). Si tu cuenta aún no tiene el correo confirmado, recibirás de nuevo el enlace de confirmación.</p>
+    <p id="modalRecuperarAyuda" class="auth-modal-ayuda">Te enviaremos un correo con un enlace para elegir una contraseña nueva (válido 1 hora). Si tu cuenta aún no tiene el correo confirmado, recibirás de nuevo el enlace de confirmación.</p>
     <p id="modalRecuperarSinMail" class="auth-modal-mail-warning" style="display:none;" role="status"></p>
     <p id="modalRecuperarError" class="auth-form-error" role="alert"></p>
     <div class="auth-field-group">

@@ -4551,6 +4551,8 @@ function cargarPedidosDesdeLocalStorage() {
 }
 
 let authHayUsuarios = false;
+/** True si el servidor usa AUTH_LINKS_IN_RESPONSE (enlaces en pantalla, sin correo). */
+let authEnlacesSinCorreo = false;
 
 async function iniciarApp() {
   if (!sesionUsuario) return;
@@ -4646,23 +4648,40 @@ async function entrarAppConSesion(user) {
 function ocultarBloqueCorreoPendiente() {
   const principal = document.getElementById('authBloquePrincipal');
   const post = document.getElementById('authBloquePostRegistro');
+  const wrap = document.getElementById('authPostRegLinkWrap');
+  const urlBox = document.getElementById('authPostRegUrlText');
   window.__pendingVerifyEmail = '';
+  window.__pendingVerifyUrl = '';
+  if (wrap) wrap.style.display = 'none';
+  if (urlBox) urlBox.textContent = '';
   if (post) post.style.display = 'none';
   if (principal) principal.style.display = 'block';
 }
 
-function mostrarBloqueCorreoPendiente(email, mensaje) {
+function mostrarBloqueCorreoPendiente(email, mensaje, verifyUrl) {
   const principal = document.getElementById('authBloquePrincipal');
   const post = document.getElementById('authBloquePostRegistro');
   const txt = document.getElementById('authPostRegText');
   const inp = document.getElementById('authPendingEmail');
   const errG = document.getElementById('authErrorGlobal');
   const errF = document.getElementById('authFormError');
+  const wrap = document.getElementById('authPostRegLinkWrap');
+  const urlBox = document.getElementById('authPostRegUrlText');
   if (errF) errF.textContent = '';
   window.__pendingVerifyEmail = String(email || '').trim();
+  window.__pendingVerifyUrl = String(verifyUrl || '').trim();
   if (txt) txt.textContent = mensaje || '';
   if (inp) inp.value = window.__pendingVerifyEmail;
   if (errG) errG.textContent = '';
+  if (wrap && urlBox) {
+    if (window.__pendingVerifyUrl) {
+      wrap.style.display = 'block';
+      urlBox.textContent = window.__pendingVerifyUrl;
+    } else {
+      wrap.style.display = 'none';
+      urlBox.textContent = '';
+    }
+  }
   const blkReset = document.getElementById('authBloqueReset');
   if (blkReset) blkReset.style.display = 'none';
   if (principal) principal.style.display = 'none';
@@ -4749,7 +4768,8 @@ async function onSubmitRegistro(ev) {
       mostrarBloqueCorreoPendiente(
         email,
         data.message ||
-          'Te enviamos un correo con un enlace para confirmar tu cuenta. Cuando lo abras, podrás iniciar sesión.'
+          'Te enviamos un correo con un enlace para confirmar tu cuenta. Cuando lo abras, podrás iniciar sesión.',
+        data.verifyUrl || ''
       );
       return;
     }
@@ -4783,6 +4803,7 @@ function abrirModalRecuperarClave() {
   const wrap = document.getElementById('modalRecuperarLinkWrap');
   const urlBox = document.getElementById('modalRecuperarUrlText');
   const sinMail = document.getElementById('modalRecuperarSinMail');
+  const ayuda = document.getElementById('modalRecuperarAyuda');
   if (err) err.textContent = '';
   if (sinMail) {
     sinMail.style.display = 'none';
@@ -4792,6 +4813,11 @@ function abrirModalRecuperarClave() {
   if (urlBox) urlBox.textContent = '';
   ultimoEnlaceRecuperacion = '';
   if (inp) inp.value = '';
+  if (ayuda) {
+    ayuda.textContent = authEnlacesSinCorreo
+      ? 'No se enviará correo: al pulsar «Enviar enlace» verás aquí abajo un enlace para confirmar el correo o restablecer la contraseña, según tu cuenta.'
+      : 'Te enviaremos un correo con un enlace para elegir una contraseña nueva (válido 1 hora). Si tu cuenta aún no tiene el correo confirmado, recibirás de nuevo el enlace de confirmación.';
+  }
   if (modal) {
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
@@ -4805,11 +4831,17 @@ async function actualizarAvisoCorreoEnModalRecuperar() {
   try {
     const r = await apiFetch('/api/auth/status');
     const s = await r.json();
+    if (s.authLinksInResponse) {
+      sinMail.style.display = 'block';
+      sinMail.textContent =
+        'Modo sin correo: el enlace aparecerá en esta ventana tras enviar la solicitud (variable AUTH_LINKS_IN_RESPONSE en el servidor).';
+      return;
+    }
     if (!s.mailConfigured) {
       sinMail.style.display = 'block';
       sinMail.textContent =
-        'El servidor no tiene configurado el envío de correo (en .env: MAIL_FROM y RESEND_API_KEY, o SMTP). ' +
-        'Nadie recibirá enlaces hasta que el administrador lo configure. Revisa la consola donde corre «npm start».';
+        'El servidor no tiene configurado el envío de correo (MAIL_FROM y RESEND_API_KEY, o SMTP). ' +
+        'Activa AUTH_LINKS_IN_RESPONSE=true para obtener enlaces aquí, o configura un proveedor de correo.';
     }
   } catch (_e) {
     /* sin bloquear el modal */
@@ -4840,11 +4872,18 @@ async function enviarSolicitudRecuperarClave() {
       method: 'POST',
       body: JSON.stringify({ email }),
     });
-    ultimoEnlaceRecuperacion = '';
-    if (wrap) wrap.style.display = 'none';
-    if (urlBox) urlBox.textContent = '';
-    mostrarToast(data.message || 'Revisa tu correo (y la carpeta de spam).', 'success', 9000);
-    cerrarModalRecuperarClave();
+    const enlace = String(data.resetUrl || data.verifyUrl || '').trim();
+    ultimoEnlaceRecuperacion = enlace;
+    if (enlace) {
+      if (wrap) wrap.style.display = 'block';
+      if (urlBox) urlBox.textContent = enlace;
+      mostrarToast(data.message || 'Copia el enlace mostrado abajo.', 'success', 12000);
+    } else {
+      if (wrap) wrap.style.display = 'none';
+      if (urlBox) urlBox.textContent = '';
+      mostrarToast(data.message || 'Revisa tu correo (y la carpeta de spam).', 'success', 9000);
+      cerrarModalRecuperarClave();
+    }
   } catch (e) {
     const det = e.detail ? ` ${String(e.detail)}` : '';
     const texto = `${String(e.message || e)}${det}`.trim();
@@ -4859,6 +4898,17 @@ async function copiarEnlaceRecuperar() {
   try {
     await navigator.clipboard.writeText(ultimoEnlaceRecuperacion);
     mostrarToast('Enlace copiado al portapapeles', 'success');
+  } catch (_e) {
+    mostrarToast('No se pudo copiar automáticamente; selecciona el texto del enlace.', 'warning');
+  }
+}
+
+async function copiarEnlaceVerificacion() {
+  const u = String(window.__pendingVerifyUrl || '').trim();
+  if (!u) return;
+  try {
+    await navigator.clipboard.writeText(u);
+    mostrarToast('Enlace de confirmación copiado', 'success');
   } catch (_e) {
     mostrarToast('No se pudo copiar automáticamente; selecciona el texto del enlace.', 'warning');
   }
@@ -4905,6 +4955,14 @@ async function reenviarCorreoVerificacionDesdeUi() {
       method: 'POST',
       body: JSON.stringify({ email }),
     });
+    const vUrl = String(data.verifyUrl || '').trim();
+    if (vUrl) {
+      window.__pendingVerifyUrl = vUrl;
+      const wrap = document.getElementById('authPostRegLinkWrap');
+      const urlBox = document.getElementById('authPostRegUrlText');
+      if (wrap) wrap.style.display = 'block';
+      if (urlBox) urlBox.textContent = vUrl;
+    }
     mostrarToast(data.message || 'Listo.', 'success', 8000);
   } catch (e) {
     if (errG) errG.textContent = String(e.message || e);
@@ -5292,6 +5350,7 @@ async function iniciarFlujoAuth() {
   }
 
   authHayUsuarios = !!status.hasUsers;
+  authEnlacesSinCorreo = !!status.authLinksInResponse;
   actualizarTextosRegistroAuth();
 
   const huboVerifyEnUrl = await confirmarCorreoDesdeUrlSiAplica();
@@ -5337,6 +5396,9 @@ async function iniciarFlujoAuth() {
     });
     document.getElementById('btnCopiarEnlaceRecuperar')?.addEventListener('click', () => {
       void copiarEnlaceRecuperar();
+    });
+    document.getElementById('btnCopiarEnlaceVerificacion')?.addEventListener('click', () => {
+      void copiarEnlaceVerificacion();
     });
     document.getElementById('btnGuardarResetPass')?.addEventListener('click', () => {
       void guardarNuevaContrasenaDesdeReset();

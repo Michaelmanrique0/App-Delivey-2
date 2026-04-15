@@ -62,6 +62,22 @@ function publicAppBaseUrl(req) {
   return String(`${req.protocol}://${req.get('host') || `localhost:${PORT}`}`).replace(/\/$/, '');
 }
 
+/** Si es true: verificación y recuperación devuelven enlaces en JSON (sin Resend ni SMTP). Solo para despliegues controlados. */
+function authLinksInResponseEnabled() {
+  const v = String(process.env.AUTH_LINKS_IN_RESPONSE || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+function buildVerifyUrl(token, req) {
+  const base = publicAppBaseUrl(req);
+  return `${base}/?verify=${encodeURIComponent(token)}`;
+}
+
+function buildResetUrl(token, req) {
+  const base = publicAppBaseUrl(req);
+  return `${base}/?reset=${encodeURIComponent(token)}`;
+}
+
 async function enviarCorreoConfirmacion(email, token, req) {
   const base = publicAppBaseUrl(req);
   const link = `${base}/?verify=${encodeURIComponent(token)}`;
@@ -246,6 +262,7 @@ app.get(
     res.json({
       hasUsers: (await userCount()) > 0,
       mailConfigured: mailDeliveryConfigured(),
+      authLinksInResponse: authLinksInResponseEnabled(),
     });
   })
 );
@@ -288,6 +305,18 @@ app.post(
       return;
     }
 
+    if (authLinksInResponseEnabled()) {
+      const verifyToken = await createVerifyEmailToken(user.id);
+      res.status(201).json({
+        needsEmailVerification: true,
+        email: user.email,
+        message:
+          'Tu cuenta está creada. Copia el enlace que ves abajo para confirmar el correo (no se envía mensaje al buzón en este modo).',
+        verifyUrl: buildVerifyUrl(verifyToken, req),
+      });
+      return;
+    }
+
     let verifyToken;
     try {
       verifyToken = await createVerifyEmailToken(user.id);
@@ -298,7 +327,7 @@ app.post(
       } catch (_e) {}
       res.status(503).json({
         error:
-          'No pudimos enviar el correo de confirmación. Configura RESEND_API_KEY (o SMTP) y MAIL_FROM en el servidor, o revisa los logs.',
+          'No pudimos enviar el correo de confirmación. Configura RESEND_API_KEY (o SMTP) y MAIL_FROM, o activa AUTH_LINKS_IN_RESPONSE=true para obtener el enlace en pantalla.',
         detail: String(err.message || err),
       });
       return;
@@ -329,6 +358,29 @@ app.post(
     }
     const tieneCorreo = !!row.email;
     const verificado = tieneCorreo && row.email_verified_at != null;
+    if (authLinksInResponseEnabled()) {
+      if (!verificado) {
+        const vtoken = await createVerifyEmailToken(row.id);
+        // eslint-disable-next-line no-console
+        console.log('[delivery] forgot-password: enlace de CONFIRMACIÓN (sin correo; AUTH_LINKS_IN_RESPONSE).');
+        res.json({
+          ok: true,
+          message:
+            'Tu cuenta aún no tiene el correo confirmado. Copia el enlace de abajo para confirmarlo (no se envía correo en este modo).',
+          verifyUrl: buildVerifyUrl(vtoken, req),
+        });
+      } else {
+        const token = await createPasswordResetToken(row.id);
+        // eslint-disable-next-line no-console
+        console.log('[delivery] forgot-password: enlace RESTABLECER contraseña (sin correo; AUTH_LINKS_IN_RESPONSE).');
+        res.json({
+          ok: true,
+          message: 'Copia el enlace de abajo para elegir una contraseña nueva (válido 1 hora; no se envía correo en este modo).',
+          resetUrl: buildResetUrl(token, req),
+        });
+      }
+      return;
+    }
     try {
       if (!verificado) {
         const vtoken = await createVerifyEmailToken(row.id);
@@ -391,6 +443,15 @@ app.post(
     }
     if (row.email_verified_at != null) {
       res.json({ ok: true, message: 'Ese correo ya está confirmado. Puedes iniciar sesión.' });
+      return;
+    }
+    if (authLinksInResponseEnabled()) {
+      const vtoken = await createVerifyEmailToken(row.id);
+      res.json({
+        ok: true,
+        message: 'Copia el enlace de abajo para confirmar tu correo (no se envía mensaje al buzón en este modo).',
+        verifyUrl: buildVerifyUrl(vtoken, req),
+      });
       return;
     }
     try {
