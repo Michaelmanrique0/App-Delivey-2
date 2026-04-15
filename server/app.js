@@ -43,34 +43,48 @@ function correoValido(emailNorm) {
 }
 
 function publicAppBaseUrl(req) {
-  return String(
-    process.env.PUBLIC_APP_URL || `${req.protocol}://${req.get('host') || `localhost:${PORT}`}`
-  ).replace(/\/$/, '');
+  const explicit = String(process.env.PUBLIC_APP_URL || '')
+    .trim()
+    .replace(/\/$/, '');
+  if (explicit) return explicit;
+
+  const vercelHost = String(process.env.VERCEL_URL || '')
+    .trim()
+    .replace(/\/$/, '')
+    .replace(/^https?:\/\//i, '');
+  if (vercelHost) {
+    const proto = String(req.get('x-forwarded-proto') || req.protocol || 'https')
+      .split(',')[0]
+      .trim();
+    return `${proto}://${vercelHost}`.replace(/\/$/, '');
+  }
+
+  return String(`${req.protocol}://${req.get('host') || `localhost:${PORT}`}`).replace(/\/$/, '');
 }
 
 async function enviarCorreoConfirmacion(email, token, req) {
   const base = publicAppBaseUrl(req);
   const link = `${base}/?verify=${encodeURIComponent(token)}`;
-  const subject = 'Confirma tu correo â€” gestiÃ³n de pedidos';
+  const subject = 'Confirma tu correo — gestión de pedidos';
   const text =
-    `Hola,\n\nAbre este enlace para confirmar tu correo (vÃ¡lido 48 horas):\n${link}\n\nSi no creaste una cuenta, ignora este mensaje.\n`;
-  const html = `<p>Hola,</p><p>Confirma tu correo con el siguiente enlace (vÃ¡lido 48 horas).</p><p><a href="${link}">Confirmar correo</a></p><p style="font-size:12px;color:#666;word-break:break-all">${link}</p>`;
+    `Hola,\n\nAbre este enlace para confirmar tu correo (válido 48 horas):\n${link}\n\nSi no creaste una cuenta, ignora este mensaje.\n`;
+  const html = `<p>Hola,</p><p>Confirma tu correo con el siguiente enlace (válido 48 horas).</p><p><a href="${link}">Confirmar correo</a></p><p style="font-size:12px;color:#666;word-break:break-all">${link}</p>`;
   await sendTransactionalMail({ to: email, subject, html, text });
 }
 
 async function enviarCorreoRecuperacion(email, token, req) {
   const base = publicAppBaseUrl(req);
   const link = `${base}/?reset=${encodeURIComponent(token)}`;
-  const subject = 'Restablecer contraseÃ±a â€” gestiÃ³n de pedidos';
+  const subject = 'Restablecer contraseña — gestión de pedidos';
   const text =
-    `Hola,\n\nPara crear una contraseÃ±a nueva, abre este enlace (vÃ¡lido 1 hora):\n${link}\n\nSi no solicitaste el cambio, ignora este mensaje.\n`;
-  const html = `<p>Hola,</p><p>Para elegir una <strong>contraseÃ±a nueva</strong>, usa el botÃ³n o enlace (vÃ¡lido 1 hora).</p><p><a href="${link}">Restablecer contraseÃ±a</a></p><p style="font-size:12px;color:#666;word-break:break-all">${link}</p>`;
+    `Hola,\n\nPara crear una contraseña nueva, abre este enlace (válido 1 hora):\n${link}\n\nSi no solicitaste el cambio, ignora este mensaje.\n`;
+  const html = `<p>Hola,</p><p>Para elegir una <strong>contraseña nueva</strong>, usa el botón o enlace (válido 1 hora).</p><p><a href="${link}">Restablecer contraseña</a></p><p style="font-size:12px;color:#666;word-break:break-all">${link}</p>`;
   await sendTransactionalMail({ to: email, subject, html, text });
 }
 
 const mensajeCorreoEnviadoGenerico =
   'Si existe una cuenta con ese correo, te enviamos un mensaje. Revisa la bandeja de entrada, la carpeta de spam y el apartado de promociones. ' +
-  'Si tu cuenta aÃºn no tiene el correo confirmado, el asunto serÃ¡ de confirmaciÃ³n (no de contraseÃ±a) hasta que confirmes.';
+  'Si tu cuenta aún no tiene el correo confirmado, el asunto será de confirmación (no de contraseña) hasta que confirmes.';
 
 function mailDeliveryConfigured() {
   const from = String(process.env.MAIL_FROM || '').trim();
@@ -116,13 +130,13 @@ async function authMiddleware(req, res, next) {
     const payload = jwt.verify(m[1], JWT_SECRET);
     const user = await getUserById(payload.sub);
     if (!user) {
-      res.status(401).json({ error: 'Usuario no vÃ¡lido' });
+      res.status(401).json({ error: 'Usuario no válido' });
       return;
     }
     req.user = user;
     next();
   } catch (_e) {
-    res.status(401).json({ error: 'SesiÃ³n invÃ¡lida o expirada' });
+    res.status(401).json({ error: 'Sesión inválida o expirada' });
   }
 }
 
@@ -144,7 +158,7 @@ function parsePayloadRow(row) {
   }
 }
 
-/** Quita asignaciÃ³n de pedidos a un mensajero antes de borrar su cuenta. */
+/** Quita asignación de pedidos a un mensajero antes de borrar su cuenta. */
 async function unassignOrdersFromUser(userId) {
   const uid = String(userId);
   const rows = await getAllOrdersRows();
@@ -247,17 +261,17 @@ app.post(
       return;
     }
     if (!correoValido(email)) {
-      res.status(400).json({ error: 'Indica un correo electrÃ³nico vÃ¡lido.' });
+      res.status(400).json({ error: 'Indica un correo electrónico válido.' });
       return;
     }
     if (password.length < 6) {
-      res.status(400).json({ error: 'La contraseÃ±a debe tener al menos 6 caracteres' });
+      res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
       return;
     }
     const count = await userCount();
     const role = count === 0 ? 'admin' : 'mensajero';
     if (await getUserRowByEmail(email)) {
-      res.status(400).json({ error: 'Ya existe una cuenta con ese correo. Usa otro correo o inicia sesiÃ³n.' });
+      res.status(400).json({ error: 'Ya existe una cuenta con ese correo. Usa otro correo o inicia sesión.' });
       return;
     }
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -284,7 +298,7 @@ app.post(
       } catch (_e) {}
       res.status(503).json({
         error:
-          'No pudimos enviar el correo de confirmaciÃ³n. Configura RESEND_API_KEY (o SMTP) y MAIL_FROM en el servidor, o revisa los logs.',
+          'No pudimos enviar el correo de confirmación. Configura RESEND_API_KEY (o SMTP) y MAIL_FROM en el servidor, o revisa los logs.',
         detail: String(err.message || err),
       });
       return;
@@ -293,7 +307,7 @@ app.post(
     res.status(201).json({
       needsEmailVerification: true,
       email: user.email,
-      message: 'Te enviamos un correo para confirmar tu cuenta. Abre el enlace y luego podrÃ¡s iniciar sesiÃ³n.',
+      message: 'Te enviamos un correo para confirmar tu cuenta. Abre el enlace y luego podrás iniciar sesión.',
     });
   })
 );
@@ -303,7 +317,7 @@ app.post(
   asyncHandler(async (req, res) => {
     const email = normalizeEmail(req.body?.email || '');
     if (!correoValido(email)) {
-      res.status(400).json({ error: 'Indica un correo electrÃ³nico vÃ¡lido.' });
+      res.status(400).json({ error: 'Indica un correo electrónico válido.' });
       return;
     }
     const row = await getUserRowByEmail(email);
@@ -320,24 +334,24 @@ app.post(
         const vtoken = await createVerifyEmailToken(row.id);
         await enviarCorreoConfirmacion(email, vtoken, req);
         // eslint-disable-next-line no-console
-        console.log('[delivery] forgot-password: enviado correo de CONFIRMACIÃ“N (cuenta sin correo verificado).');
+        console.log('[delivery] forgot-password: enviado correo de CONFIRMACIÓN (cuenta sin correo verificado).');
       } else {
         const token = await createPasswordResetToken(row.id);
         await enviarCorreoRecuperacion(email, token, req);
         // eslint-disable-next-line no-console
-        console.log('[delivery] forgot-password: enviado correo de RESTABLECER contraseÃ±a.');
+        console.log('[delivery] forgot-password: enviado correo de RESTABLECER contraseña.');
       }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[delivery] forgot-password: fallo al enviar correo:', err);
       res.status(503).json({
-        error: 'No se pudo enviar el correo. Revisa la configuraciÃ³n del servidor (correo y URL pÃºblica).',
+        error: 'No se pudo enviar el correo. Revisa la configuración del servidor (correo y URL pública).',
         detail: String(err.message || err),
       });
       return;
     }
     // eslint-disable-next-line no-console
-    console.log('[delivery] forgot-password: envÃ­o correcto hacia', email.replace(/(^.).*(@.+$)/, '$1***$2'));
+    console.log('[delivery] forgot-password: envío correcto hacia', email.replace(/(^.).*(@.+$)/, '$1***$2'));
     res.json({ ok: true, message: mensajeCorreoEnviadoGenerico });
   })
 );
@@ -347,18 +361,18 @@ app.post(
   asyncHandler(async (req, res) => {
     const token = String(req.body?.token || '').trim();
     if (!token) {
-      res.status(400).json({ error: 'Falta el token de verificaciÃ³n.' });
+      res.status(400).json({ error: 'Falta el token de verificación.' });
       return;
     }
     const userId = await consumeVerifyEmailToken(token);
     if (!userId) {
       res.status(400).json({
-        error: 'El enlace no es vÃ¡lido o ha caducado. Pide un nuevo correo de confirmaciÃ³n desde la pantalla de acceso.',
+        error: 'El enlace no es válido o ha caducado. Pide un nuevo correo de confirmación desde la pantalla de acceso.',
       });
       return;
     }
     await setUserEmailVerified(userId);
-    res.json({ ok: true, message: 'Correo confirmado. Ya puedes iniciar sesiÃ³n.' });
+    res.json({ ok: true, message: 'Correo confirmado. Ya puedes iniciar sesión.' });
   })
 );
 
@@ -367,7 +381,7 @@ app.post(
   asyncHandler(async (req, res) => {
     const email = normalizeEmail(req.body?.email || '');
     if (!correoValido(email)) {
-      res.status(400).json({ error: 'Indica un correo electrÃ³nico vÃ¡lido.' });
+      res.status(400).json({ error: 'Indica un correo electrónico válido.' });
       return;
     }
     const row = await getUserRowByEmail(email);
@@ -376,7 +390,7 @@ app.post(
       return;
     }
     if (row.email_verified_at != null) {
-      res.json({ ok: true, message: 'Ese correo ya estÃ¡ confirmado. Puedes iniciar sesiÃ³n.' });
+      res.json({ ok: true, message: 'Ese correo ya está confirmado. Puedes iniciar sesión.' });
       return;
     }
     try {
@@ -384,7 +398,7 @@ app.post(
       await enviarCorreoConfirmacion(email, vtoken, req);
     } catch (err) {
       res.status(503).json({
-        error: 'No se pudo enviar el correo. Revisa la configuraciÃ³n del servidor.',
+        error: 'No se pudo enviar el correo. Revisa la configuración del servidor.',
         detail: String(err.message || err),
       });
       return;
@@ -399,16 +413,16 @@ app.post(
     const token = String(req.body?.token || '').trim();
     const password = String(req.body?.password || '');
     if (!token) {
-      res.status(400).json({ error: 'Falta el token de recuperaciÃ³n.' });
+      res.status(400).json({ error: 'Falta el token de recuperación.' });
       return;
     }
     if (password.length < 6) {
-      res.status(400).json({ error: 'La contraseÃ±a debe tener al menos 6 caracteres' });
+      res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
       return;
     }
     const userId = await consumePasswordResetToken(token);
     if (!userId) {
-      res.status(400).json({ error: 'El enlace no es vÃ¡lido o ha caducado. Solicita uno nuevo.' });
+      res.status(400).json({ error: 'El enlace no es válido o ha caducado. Solicita uno nuevo.' });
       return;
     }
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -428,25 +442,25 @@ app.post(
     const email = normalizeEmail(req.body?.login || req.body?.email || '');
     const password = String(req.body?.password || '');
     if (!correoValido(email)) {
-      res.status(400).json({ error: 'Inicia sesiÃ³n solo con tu correo electrÃ³nico registrado.' });
+      res.status(400).json({ error: 'Inicia sesión solo con tu correo electrónico registrado.' });
       return;
     }
     const row = await getUserRowByEmail(email);
     if (!row) {
-      res.status(401).json({ error: 'Correo o contraseÃ±a incorrectos' });
+      res.status(401).json({ error: 'Correo o contraseña incorrectos' });
       return;
     }
     if (row.email && row.email_verified_at == null) {
       res.status(403).json({
         error:
-          'Debes confirmar tu correo antes de entrar. Revisa tu bandeja (y spam) o usa Â«Reenviar correo de confirmaciÃ³nÂ».',
+          'Debes confirmar tu correo antes de entrar. Revisa tu bandeja (y spam) o usa «Reenviar correo de confirmación».',
         code: 'EMAIL_NOT_VERIFIED',
       });
       return;
     }
     const ok = await bcrypt.compare(password, row.password_hash);
     if (!ok) {
-      res.status(401).json({ error: 'Correo o contraseÃ±a incorrectos' });
+      res.status(401).json({ error: 'Correo o contraseña incorrectos' });
       return;
     }
     const user = await getUserById(row.id);
@@ -478,7 +492,7 @@ app.post(
     const password = String(req.body?.password || '');
     const role = String(req.body?.role || 'mensajero');
     if (!['admin', 'mensajero'].includes(role)) {
-      res.status(400).json({ error: 'Rol invÃ¡lido' });
+      res.status(400).json({ error: 'Rol inválido' });
       return;
     }
     if (username.length < 1) {
@@ -486,11 +500,11 @@ app.post(
       return;
     }
     if (!correoValido(email)) {
-      res.status(400).json({ error: 'Indica un correo electrÃ³nico vÃ¡lido.' });
+      res.status(400).json({ error: 'Indica un correo electrónico válido.' });
       return;
     }
     if (password.length < 6) {
-      res.status(400).json({ error: 'La contraseÃ±a debe tener al menos 6 caracteres' });
+      res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
       return;
     }
     if (await getUserRowByEmail(email)) {
@@ -510,12 +524,12 @@ app.patch(
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id < 1) {
-      res.status(400).json({ error: 'Id invÃ¡lido' });
+      res.status(400).json({ error: 'Id inválido' });
       return;
     }
     const password = String(req.body?.password || '');
     if (password.length < 6) {
-      res.status(400).json({ error: 'La contraseÃ±a debe tener al menos 6 caracteres' });
+      res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
       return;
     }
     const target = await getUserById(id);
@@ -536,16 +550,16 @@ app.patch(
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id < 1) {
-      res.status(400).json({ error: 'Id invÃ¡lido' });
+      res.status(400).json({ error: 'Id inválido' });
       return;
     }
     if (id === req.user.id) {
-      res.status(400).json({ error: 'No puedes cambiar tu propio rol desde aquÃ­' });
+      res.status(400).json({ error: 'No puedes cambiar tu propio rol desde aquí' });
       return;
     }
     const role = String(req.body?.role || '');
     if (!['admin', 'mensajero'].includes(role)) {
-      res.status(400).json({ error: 'Rol invÃ¡lido' });
+      res.status(400).json({ error: 'Rol inválido' });
       return;
     }
     const target = await getUserById(id);
@@ -565,7 +579,7 @@ app.delete(
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id < 1) {
-      res.status(400).json({ error: 'Id invÃ¡lido' });
+      res.status(400).json({ error: 'Id inválido' });
       return;
     }
     if (id === req.user.id) {
@@ -581,7 +595,7 @@ app.delete(
       const users = await listUsers();
       const admins = users.filter((u) => u.role === 'admin');
       if (admins.length <= 1) {
-        res.status(400).json({ error: 'No puedes eliminar el Ãºnico administrador del sistema' });
+        res.status(400).json({ error: 'No puedes eliminar el único administrador del sistema' });
         return;
       }
     }
@@ -647,7 +661,7 @@ app.put(
     for (const p of orders) {
       if (!p || p.id == null) continue;
       if (String(p.assignedTo || '') !== uid) {
-        res.status(403).json({ error: 'No puedes modificar pedidos que no te estÃ¡n asignados' });
+        res.status(403).json({ error: 'No puedes modificar pedidos que no te están asignados' });
         return;
       }
       await upsertOrderRow(Number(p.id), p);
@@ -666,7 +680,7 @@ app.patch(
   asyncHandler(async (req, res) => {
     const orderId = Number(req.params.orderId);
     if (!Number.isFinite(orderId)) {
-      res.status(400).json({ error: 'Id de pedido invÃ¡lido' });
+      res.status(400).json({ error: 'Id de pedido inválido' });
       return;
     }
     const rows = await getAllOrdersRows();
@@ -686,7 +700,7 @@ app.patch(
     } else {
       const uid = Number(assignUserId);
       if (!Number.isFinite(uid)) {
-        res.status(400).json({ error: 'userId invÃ¡lido' });
+        res.status(400).json({ error: 'userId inválido' });
         return;
       }
       const u = await getUserById(uid);
@@ -709,12 +723,12 @@ app.post(
     const assignUserId = req.body?.userId;
     const orderIds = req.body?.orderIds;
     if (assignUserId === null || assignUserId === '' || assignUserId === undefined) {
-      res.status(400).json({ error: 'Indica userId o null para quitar asignaciÃ³n' });
+      res.status(400).json({ error: 'Indica userId o null para quitar asignación' });
       return;
     }
     const uid = Number(assignUserId);
     if (!Number.isFinite(uid)) {
-      res.status(400).json({ error: 'userId invÃ¡lido' });
+      res.status(400).json({ error: 'userId inválido' });
       return;
     }
     const u = await getUserById(uid);
@@ -723,7 +737,7 @@ app.post(
       return;
     }
     if (!Array.isArray(orderIds) || orderIds.length === 0) {
-      res.status(400).json({ error: 'orderIds debe ser un array no vacÃ­o' });
+      res.status(400).json({ error: 'orderIds debe ser un array no vacío' });
       return;
     }
     const rows = await getAllOrdersRows();

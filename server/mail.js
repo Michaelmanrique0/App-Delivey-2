@@ -20,7 +20,7 @@ async function sendTransactionalMail({ to, subject, html, text }) {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${resendKey}`,
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
       },
       body: JSON.stringify({
         from,
