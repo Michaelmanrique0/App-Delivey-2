@@ -1330,6 +1330,54 @@ function htmlBloqueTotalesResumen(totales) {
   );
 }
 
+/** Solo administrador: totales Nequi/Daviplata/recogido por mensajero (vista Usuarios y roles). */
+function renderTotalesAdminPorMensajero() {
+  const hostAdmin = document.getElementById('totalesAdminPorMensajero');
+  if (!hostAdmin) return;
+  if (!esSesionAdmin()) {
+    hostAdmin.innerHTML = '';
+    hostAdmin.style.display = 'none';
+    return;
+  }
+  const rows = [];
+  for (const m of listaMensajerosCache) {
+    const id = String(m.id);
+    const subset = pedidos.filter((p) => uidPedidoAsignado(p) === id);
+    const t = calcularTotalesEntregaPedidos(subset);
+    if (!t.hayDatos) continue;
+    rows.push({ titulo: m.username, totales: t });
+  }
+  const sinAsignar = pedidos.filter((p) => uidPedidoAsignado(p) === '');
+  const tSin = calcularTotalesEntregaPedidos(sinAsignar);
+  if (tSin.hayDatos) {
+    rows.push({ titulo: 'Sin asignar', totales: tSin });
+  }
+  const idsEnLista = new Set(listaMensajerosCache.map((m) => String(m.id)));
+  const idsOrfanos = new Set();
+  for (const p of pedidos) {
+    const a = uidPedidoAsignado(p);
+    if (a && !idsEnLista.has(a)) idsOrfanos.add(a);
+  }
+  for (const orphanId of idsOrfanos) {
+    const subset = pedidos.filter((p) => uidPedidoAsignado(p) === orphanId);
+    const t = calcularTotalesEntregaPedidos(subset);
+    if (!t.hayDatos) continue;
+    rows.push({ titulo: `Mensajero (id ${orphanId})`, totales: t });
+  }
+  if (rows.length === 0) {
+    hostAdmin.innerHTML = '';
+    hostAdmin.style.display = 'none';
+  } else {
+    hostAdmin.innerHTML = rows
+      .map(
+        (r) =>
+          `<article class="admin-mensajero-totales-card"><h3 class="admin-mensajero-totales-titulo">${escapeHtmlTexto(r.titulo)}</h3>${htmlBloqueTotalesResumen(r.totales)}</article>`
+      )
+      .join('');
+    hostAdmin.style.display = 'flex';
+  }
+}
+
 function renderPedidos() {
   // Si en memoria quedaron duplicados (por cache o recargas), normalizar antes de pintar.
   pedidos = deduplicarPedidosPorId(pedidos);
@@ -1369,11 +1417,7 @@ function renderPedidos() {
     actualizarPestañasListaPedidos([], [], [], []);
     const elResumenVacio = document.getElementById('totalesResumen');
     if (elResumenVacio) elResumenVacio.style.display = 'none';
-    const hostAdminVacio = document.getElementById('totalesAdminPorMensajero');
-    if (hostAdminVacio) {
-      hostAdminVacio.innerHTML = '';
-      hostAdminVacio.style.display = 'none';
-    }
+    renderTotalesAdminPorMensajero();
     renderListaOrdenEntrega();
     programarActualizacionFabNavegacion();
     return;
@@ -1393,55 +1437,12 @@ function renderPedidos() {
     lista.appendChild(crearSeccionPedidos('seccion-pendientes', pendientes, 'No hay pedidos pendientes'));
   }
 
-  const elResumen = document.getElementById('totalesResumen');
-  const hostAdmin = document.getElementById('totalesAdminPorMensajero');
+  renderTotalesAdminPorMensajero();
 
+  const elResumen = document.getElementById('totalesResumen');
   if (esSesionAdmin()) {
     if (elResumen) elResumen.style.display = 'none';
-    if (hostAdmin) {
-      const rows = [];
-      for (const m of listaMensajerosCache) {
-        const id = String(m.id);
-        const subset = pedidos.filter((p) => uidPedidoAsignado(p) === id);
-        const t = calcularTotalesEntregaPedidos(subset);
-        if (!t.hayDatos) continue;
-        rows.push({ titulo: m.username, totales: t });
-      }
-      const sinAsignar = pedidos.filter((p) => uidPedidoAsignado(p) === '');
-      const tSin = calcularTotalesEntregaPedidos(sinAsignar);
-      if (tSin.hayDatos) {
-        rows.push({ titulo: 'Sin asignar', totales: tSin });
-      }
-      const idsEnLista = new Set(listaMensajerosCache.map((m) => String(m.id)));
-      const idsOrfanos = new Set();
-      for (const p of pedidos) {
-        const a = uidPedidoAsignado(p);
-        if (a && !idsEnLista.has(a)) idsOrfanos.add(a);
-      }
-      for (const orphanId of idsOrfanos) {
-        const subset = pedidos.filter((p) => uidPedidoAsignado(p) === orphanId);
-        const t = calcularTotalesEntregaPedidos(subset);
-        if (!t.hayDatos) continue;
-        rows.push({ titulo: `Mensajero (id ${orphanId})`, totales: t });
-      }
-      if (rows.length === 0) {
-        hostAdmin.innerHTML = '';
-        hostAdmin.style.display = 'none';
-      } else {
-        hostAdmin.innerHTML = rows
-          .map(
-            (r) =>
-              `<article class="admin-mensajero-totales-card"><h3 class="admin-mensajero-totales-titulo">${escapeHtmlTexto(r.titulo)}</h3>${htmlBloqueTotalesResumen(r.totales)}</article>`
-          )
-          .join('');
-        hostAdmin.style.display = 'flex';
-      }
-    }
   } else {
-    if (hostAdmin) {
-      hostAdmin.innerHTML = '';
-      hostAdmin.style.display = 'none';
-    }
     const totales = calcularTotalesEntregaPedidos(pedidos);
     if (elResumen) {
       const elRecogidoDia = document.getElementById('totalRecogidoDia');
@@ -5499,6 +5500,7 @@ async function refrescarListaUsuariosPagina() {
   }
   await cargarMensajerosParaAsignacion();
   renderPanelAsignacionesMensajeros();
+  renderTotalesAdminPorMensajero();
 }
 
 async function cambiarRolUsuario(userId, role) {

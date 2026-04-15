@@ -2255,6 +2255,10 @@ button i,
   margin-bottom: 28px;
 }
 
+.page-usuarios-totales-seccion-titulo {
+  margin-top: 28px;
+}
+
 .page-usuarios-asignaciones-titulo {
   margin: 24px 0 8px;
   font-size: 1.1rem;

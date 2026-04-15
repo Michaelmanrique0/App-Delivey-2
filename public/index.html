@@ -239,7 +239,6 @@
         Pagado por Daviplata: $<span id="totalPagadoDaviplata">0</span>
       </div>
     </div>
-    <div id="totalesAdminPorMensajero" class="admin-totales-por-mensajero" style="display: none;" aria-label="Totales por mensajero"></div>
     <div class="pedidos-tabs" id="pedidosTabs">
       <button type="button" class="pedidos-tab active" data-vista-pedidos="pendientes" onclick="cambiarVistaPedidos('pendientes')"><i class="fa-regular fa-clock"></i> Pendientes</button>
       <button type="button" class="pedidos-tab" data-vista-pedidos="enCurso" hidden onclick="cambiarVistaPedidos('enCurso')"><i class="fa-solid fa-truck-fast"></i> En ruta</button>
@@ -285,6 +284,18 @@
     <h2 class="page-usuarios-roles-titulo"><i class="fa-solid fa-users" aria-hidden="true"></i> Usuarios y roles</h2>
     <p class="modal-usuarios-ayuda page-usuarios-roles-intro">Crea mensajeros u otros administradores y cambia roles cuando lo necesites.</p>
     <div id="usuariosRolesLista" class="modal-usuarios-lista page-usuarios-lista"></div>
+
+    <h3 class="page-usuarios-asignaciones-titulo"><i class="fa-solid fa-motorcycle" aria-hidden="true"></i> Pedidos asignados por mensajero</h3>
+    <p class="page-usuarios-asignaciones-ayuda">Pedidos que ahora mismo tienen asignado a cada mensajero en la lista cargada. Usa <strong>Actualizar asignaciones</strong> si acabas de cambiar pedidos en otro dispositivo o quieres traer lo último del servidor.</p>
+    <div class="page-usuarios-asignaciones-toolbar">
+      <button type="button" class="btn-info" onclick="void actualizarPanelAsignacionesMensajerosDesdeApi()">Actualizar asignaciones</button>
+    </div>
+    <div id="usuariosRolesAsignaciones" class="usuarios-roles-asignaciones" aria-live="polite"></div>
+
+    <h3 class="page-usuarios-asignaciones-titulo page-usuarios-totales-seccion-titulo"><i class="fa-solid fa-sack-dollar" aria-hidden="true"></i> Recogido del día, domicilio, Nequi y Daviplata (por mensajero)</h3>
+    <p class="page-usuarios-asignaciones-ayuda">Mismos totales que ve cada mensajero en pedidos: recogido, pago domiciliario ($12.000 por envío), a entregar a tienda, Nequi y Daviplata. Incluye fila <strong>Sin asignar</strong> si hay pedidos sin mensajero.</p>
+    <div id="totalesAdminPorMensajero" class="admin-totales-por-mensajero" style="display: none;" aria-label="Totales por mensajero"></div>
+
     <h3 class="modal-usuarios-subtitulo">Nuevo usuario</h3>
     <div class="modal-usuarios-form modal-usuarios-form--etiquetado page-usuarios-form-nuevo">
       <label class="modal-usuarios-mini-label" for="nuevoUsuarioNombre">Nombre en la app</label>
@@ -300,17 +311,10 @@
       </select>
       <button type="button" class="btn-primary" id="btnCrearUsuarioAdmin" onclick="void crearUsuarioDesdeModal()">Crear</button>
     </div>
-
-    <h3 class="page-usuarios-asignaciones-titulo"><i class="fa-solid fa-motorcycle" aria-hidden="true"></i> Pedidos asignados por mensajero</h3>
-    <p class="page-usuarios-asignaciones-ayuda">Pedidos que ahora mismo tienen asignado a cada mensajero en la lista cargada. Usa <strong>Actualizar asignaciones</strong> si acabas de cambiar pedidos en otro dispositivo o quieres traer lo último del servidor.</p>
-    <div class="page-usuarios-asignaciones-toolbar">
-      <button type="button" class="btn-info" onclick="void actualizarPanelAsignacionesMensajerosDesdeApi()">Actualizar asignaciones</button>
-    </div>
-    <div id="usuariosRolesAsignaciones" class="usuarios-roles-asignaciones" aria-live="polite"></div>
   </section>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260419mediospagomensajero"></script>
+<script src="app.js?v=20260419usuariosrolesTotales"></script>
 </body>
 </html>
