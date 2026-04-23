@@ -692,11 +692,11 @@ function limpiarTimestampsChat(texto) {
 }
 
 function patronUrlMapsRegexGlobal() {
-  return /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/gi;
+  return /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|(?:www\.)?goo\.gl\/maps|maps\.apple\.com|maps\.apple)[^\s\n]*/gi;
 }
 
 function patronUrlMapsRegexUna() {
-  return /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|maps\.apple\.com|maps\.apple)[^\s\n]*/i;
+  return /https?:\/\/(?:(?:www\.)?google\.com\/maps|maps\.google\.com|maps\.app\.goo\.gl|(?:www\.)?goo\.gl\/maps|maps\.apple\.com|maps\.apple)[^\s\n]*/i;
 }
 
 function extraerTodasLasUrlsMapsEnTexto(texto) {
@@ -988,12 +988,12 @@ async function resolverUrlCorta(url) {
         const c = extraerCoordenadas(decoded);
         if (c) return c;
       }
-      const llMatch = html.match(/"latitude"\s*:\s*(-?\d+\.\d+).*?"longitude"\s*:\s*(-?\d+\.\d+)/s);
+      const llMatch = html.match(/"latitude"\s*:\s*(-?\d+(?:\.\d+)?).*?"longitude"\s*:\s*(-?\d+(?:\.\d+)?)/s);
       if (llMatch) {
         const lat = parseFloat(llMatch[1]), lng = parseFloat(llMatch[2]);
         if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
       }
-      const centerMatch = html.match(/center=(-?\d+\.\d+),(-?\d+\.\d+)/);
+      const centerMatch = html.match(/center=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
       if (centerMatch) {
         const lat = parseFloat(centerMatch[1]), lng = parseFloat(centerMatch[2]);
         if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) return { lat, lng };
@@ -1094,10 +1094,17 @@ async function procesarPedido() {
   if (btnProcesar) { btnProcesar.textContent = textoOriginalBtn; btnProcesar.disabled = false; }
 
   if (!coords) {
+    const raw = extraerCoordenadas(mapUrl);
+    const msgFueraZona =
+      raw && !estaEnZonaOperacion(raw)
+        ? 'El enlace tiene coordenadas fuera de Bogotá y alrededores. Si el pedido es en zona, pega un enlace completo desde Maps o corrige la dirección para geocodificar.'
+        : '';
     mostrarToast(
-      'No se pudieron extraer coordenadas de la URL ni de la dirección.\n\nSe guardará el pedido sin coordenadas. Abre el enlace y pega el link completo en el apartado de abajo para aplicar.',
+      (msgFueraZona ||
+        'No se pudieron obtener coordenadas en zona desde la URL ni desde la dirección (enlace solo con nombre de lugar, enlace corto fallido, etc.).') +
+        '\n\nSe guardará el pedido sin coordenadas. Abre el enlace, copia el enlace completo y pégalo en el apartado de abajo para aplicar.',
       'warning',
-      10000
+      12000
     );
   }
 
@@ -1172,24 +1179,54 @@ async function procesarMultiplesPedidos(texto) {
   //   <url maps>
   //   N:
   //   Para agilizar...
+  // Pero a veces llega como:
+  //   <url maps>
+  //   N:
+  //   Para agilizar...
   // Si solo usamos urlsGlobal por índice, se puede desalinear y repetir ubicaciones.
   const urlsPorNumero = (() => {
     const map = new Map();
     let numActual = null;
     const lineas = String(textoLimpio || '').split('\n');
-    for (const raw of lineas) {
-      const line = raw.trim();
+    const pushUrl = (n, u) => {
+      if (n == null) return;
+      const nn = Number(n);
+      if (!Number.isFinite(nn)) return;
+      if (!map.has(nn)) map.set(nn, []);
+      map.get(nn).push(String(u || '').trim());
+    };
+
+    for (let i = 0; i < lineas.length; i++) {
+      const line = String(lineas[i] || '').trim();
       const mNum = line.match(/^(\d+):\s*$/);
       if (mNum) {
         numActual = Number(mNum[1]);
         continue;
       }
+
       const mUrl = line.match(patronUrlMapsRegexUna());
-      if (mUrl && numActual != null) {
-        const u = mUrl[0].trim();
-        if (!map.has(numActual)) map.set(numActual, []);
-        map.get(numActual).push(u);
+      if (!mUrl) continue;
+
+      const u = mUrl[0].trim();
+
+      // Caso normal: "N:" antes de la URL.
+      if (numActual != null) {
+        pushUrl(numActual, u);
+        continue;
       }
+
+      // Caso común en chats: la URL llega justo antes del "N:".
+      // Buscamos el próximo "N:" cercano, deteniéndonos si aparece otro URL o "Para agilizar".
+      let numCercano = null;
+      for (let j = i + 1; j < Math.min(i + 8, lineas.length); j++) {
+        const t = String(lineas[j] || '').trim();
+        if (!t) continue;
+        const mNum2 = t.match(/^(\d+):\s*$/);
+        if (mNum2) { numCercano = Number(mNum2[1]); break; }
+        if (patronUrlMapsRegexUna().test(t)) break;
+        if (/Para\s+agilizar/i.test(t)) break;
+      }
+      if (numCercano != null) pushUrl(numCercano, u);
     }
     return map;
   })();
@@ -1496,7 +1533,20 @@ async function aplicarLinkMapsPendiente(pedidoId) {
   }
   const coords = await obtenerCoordenadas(nuevaUrl, p.direccion);
   if (!coords) {
-    mostrarToast('No se pudieron extraer coordenadas de ese enlace. Prueba con otro link de Google Maps.', 'error', 8000);
+    const raw = extraerCoordenadas(nuevaUrl);
+    if (raw && !estaEnZonaOperacion(raw)) {
+      mostrarToast(
+        'El enlace sí tiene coordenadas, pero quedan fuera de la zona operativa (Bogotá y alrededores). Revisa que sea el domicilio correcto o pega un link con ubicación en zona.',
+        'warning',
+        12000
+      );
+    } else {
+      mostrarToast(
+        'No se pudieron obtener coordenadas en zona desde ese enlace (faltan en la URL o solo hay nombre de sitio). Abre Maps, elige “Compartir” y pega el enlace completo, o uno que muestre @latitud,longitud en la barra de direcciones.',
+        'error',
+        12000
+      );
+    }
     return;
   }
   p.coords = { lat: coords.lat, lng: coords.lng };
@@ -1773,7 +1823,7 @@ function crearTarjetaPedido(pedido, index) {
   const textoBotonNotificar = pedido.notificadoEnCamino ? 'Volver a notificar' : 'Notificar en camino';
   const btnNotificarHtml =
     !adminUi && etapaActual === 'notificar'
-      ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id})"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
+      ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, { abrirEnrutarDespues: true })"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
       : '';
   const btnNotificarNuevamenteHtml =
     !adminUi &&
@@ -3749,6 +3799,20 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
   guardarPedidos();
   renderPedidos();
   if (typeof opciones.onSuccess === 'function') opciones.onSuccess();
+  if (opciones.abrirEnrutarDespues) {
+    mostrarModalDecision({
+      titulo: 'Enrutar ahora',
+      texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
+      textoConfirmar: 'Enrutar',
+      claseConfirmar: 'btn-route',
+      textoSecundario: 'Más tarde',
+      claseSecundario: 'btn-info',
+      textoCancelar: 'Cerrar',
+      onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
+      onSecundario: () => {},
+      onCancelar: () => {}
+    });
+  }
 }
 
 // --- Mapa: marcadores y ruta ---
@@ -4154,25 +4218,30 @@ function redibujarRutaDebounced(ms = 250) {
   }, ms);
 }
 
+/** Fragmento numérico para lat/lng en URLs de Maps (acepta 4, 4.6 y -74.07). */
+const _RE_COORD_MAPS = '-?\\d+(?:\\.\\d+)?';
+
 function extraerCoordenadas(url) {
   const limpia = url.replace(/\s+/g, '').replace(/%2C/gi, ',').replace(/%40/gi, '@');
   let decoded;
   try { decoded = decodeURIComponent(limpia); } catch (e) { decoded = limpia; }
 
-  const patrones = [
-    /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
-    /@(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /query=(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /[?&]coordinate=(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /place\/[^@]*@(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /[?&]sll=(-?\d+\.\d+),(-?\d+\.\d+)/,
-    /center=(-?\d+\.\d+),(-?\d+\.\d+)/,
+  const patronesLatLng = [
+    new RegExp(`!3d(${_RE_COORD_MAPS})!4d(${_RE_COORD_MAPS})`),
+    new RegExp(`@(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`[?&]q=(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`query=(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`[?&]coordinate=(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`[?&]ll=(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`place/[^@]*@(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`[?&]sll=(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
+    new RegExp(`center=(${_RE_COORD_MAPS}),(${_RE_COORD_MAPS})`),
   ];
+  /** En muchas URLs compactas Google usa !2d=lng y !3d=lat (orden inverso al bloque !3d/!4d). */
+  const patronLngLat = new RegExp(`!2d(${_RE_COORD_MAPS})!3d(${_RE_COORD_MAPS})`);
 
   for (const texto of [decoded, limpia, url]) {
-    for (const p of patrones) {
+    for (const p of patronesLatLng) {
       const m = texto.match(p);
       if (m) {
         const lat = parseFloat(m[1]);
@@ -4180,6 +4249,14 @@ function extraerCoordenadas(url) {
         if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
           return { lat, lng };
         }
+      }
+    }
+    const mSwap = texto.match(patronLngLat);
+    if (mSwap) {
+      const lng = parseFloat(mSwap[1]);
+      const lat = parseFloat(mSwap[2]);
+      if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        return { lat, lng };
       }
     }
   }
