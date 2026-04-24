@@ -731,6 +731,7 @@ function pedidoNuevoBase() {
     assignedTo: null,
     createdBy: null,
     enCurso: false,
+    haSidoEnrutado: false,
     posicionPendiente: null,
     entregado: false,
     noEntregado: false,
@@ -1944,9 +1945,10 @@ function crearTarjetaPedido(pedido, index) {
   const btnEnrutarHtml = etapaActual === 'enrutar'
     ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar</button>`
     : '';
-  const btnEnrutarNuevamenteHtml = etapaActual === 'enRuta'
-    ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar nuevamente</button>`
-    : '';
+  const btnEnrutarNuevamenteHtml =
+    etapaActual === 'enRuta' || (etapaActual === 'notificar' && !!pedido.haSidoEnrutado)
+      ? `<button class="btn-route" onclick="enrutarConApps(${index}, ${pedido.id})"><i class="fa-solid fa-route"></i> Enrutar nuevamente</button>`
+      : '';
   const btnLlegueDestinoHtml = etapaActual === 'enRuta'
     ? `<button class="btn-primary" onclick="marcarLlegueDestino(${index}, ${pedido.id})"><i class="fa-solid fa-flag-checkered"></i> Llegué al destino</button>`
     : '';
@@ -2543,6 +2545,7 @@ function marcarEnCurso(index) {
   const estabaEnCurso = !!pedido.enCurso;
   if (pedido.posicionPendiente == null) pedido.posicionPendiente = index;
   pedido.enCurso = true;
+  pedido.haSidoEnrutado = true;
   if (!pedido.hasOwnProperty('llegoDestino')) pedido.llegoDestino = false;
   if (!estabaEnCurso) {
     vistaPedidosSeleccionadaManual = true;
@@ -3613,18 +3616,40 @@ function abrirNavegacionConSelector(index, pedidoId) {
   }
   marcarEnCurso(indexFinal);
 
-  mostrarModalDecision({
-    titulo: 'Enrutar',
-    texto: 'Selecciona la app para enrutar:',
-    textoConfirmar: 'Google Maps',
-    claseConfirmar: 'btn-route',
-    textoSecundario: 'Waze',
-    claseSecundario: 'btn-route',
-    textoCancelar: 'Cerrar',
-    onConfirmar: () => abrirNavegacion('maps', indexFinal, pedidoId),
-    onSecundario: () => abrirNavegacion('waze', indexFinal, pedidoId),
-    onCancelar: () => {}
-  });
+  // En móvil: usar "geo:" para que el sistema muestre apps instaladas compatibles (chooser nativo).
+  const ua = navigator.userAgent || '';
+  const isAndroid = /Android/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
+
+  if (isAndroid) {
+    if (u.lat != null && u.lng != null) {
+      const etiqueta = encodeURIComponent(`Pedido ${pedidoId}`);
+      window.location.href = `geo:${u.lat},${u.lng}?q=${u.lat},${u.lng}(${etiqueta})`;
+    } else {
+      const destino = encodeURIComponent(u.direccion || '');
+      window.location.href = `geo:0,0?q=${destino}`;
+    }
+    return;
+  }
+
+  // En iOS no existe un "chooser" universal consistente; usamos enlace web (puede sugerir abrir en app).
+  if (isIOS) {
+    if (u.lat != null && u.lng != null) {
+      window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`;
+    } else {
+      const destino = encodeURIComponent(u.direccion || '');
+      window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${destino}&travelmode=driving`;
+    }
+    return;
+  }
+
+  // Desktop fallback.
+  if (u.lat != null && u.lng != null) {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
+  } else {
+    const destino = encodeURIComponent(u.direccion || '');
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${destino}&travelmode=driving`, '_blank');
+  }
 }
 
 function enrutarConApps(index, pedidoId) {
@@ -4441,6 +4466,7 @@ function normalizarPedidoEnMemoria(p) {
   if (!p.hasOwnProperty('mapUrl')) p.mapUrl = '';
   if (!p.hasOwnProperty('coords') || !p.coords) p.coords = null;
   if (!p.hasOwnProperty('enCurso')) p.enCurso = false;
+  if (!p.hasOwnProperty('haSidoEnrutado')) p.haSidoEnrutado = false;
   if (!p.hasOwnProperty('posicionPendiente')) p.posicionPendiente = null;
   if (!p.hasOwnProperty('entregado')) p.entregado = false;
   if (!p.hasOwnProperty('noEntregado')) p.noEntregado = false;
