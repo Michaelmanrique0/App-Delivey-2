@@ -3246,7 +3246,10 @@ function mostrarModalDecision(opciones) {
     btnSecundario.className = opciones.claseSecundario || 'btn-info';
     btnSecundario.style.display = opciones.mostrarSecundario === false ? 'none' : 'inline-block';
   }
-  if (btnCancelar) btnCancelar.textContent = opciones.textoCancelar || 'Cancelar';
+  if (btnCancelar) {
+    btnCancelar.textContent = opciones.textoCancelar || 'Cancelar';
+    btnCancelar.style.display = opciones.mostrarCancelar === false ? 'none' : 'inline-block';
+  }
 
   decisionPendiente = {
     onConfirmar: opciones.onConfirmar || null,
@@ -3610,12 +3613,18 @@ function abrirNavegacionConSelector(index, pedidoId) {
   }
   marcarEnCurso(indexFinal);
 
-  if (u.lat != null && u.lng != null) {
-    window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
-  } else {
-    const destino = encodeURIComponent(u.direccion || '');
-    window.open(`https://www.google.com/maps/dir/?api=1&destination=${destino}&travelmode=driving`, '_blank');
-  }
+  mostrarModalDecision({
+    titulo: 'Enrutar',
+    texto: 'Selecciona la app para enrutar:',
+    textoConfirmar: 'Google Maps',
+    claseConfirmar: 'btn-route',
+    textoSecundario: 'Waze',
+    claseSecundario: 'btn-route',
+    textoCancelar: 'Cerrar',
+    onConfirmar: () => abrirNavegacion('maps', indexFinal, pedidoId),
+    onSecundario: () => abrirNavegacion('waze', indexFinal, pedidoId),
+    onCancelar: () => {}
+  });
 }
 
 function enrutarConApps(index, pedidoId) {
@@ -3907,9 +3916,36 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
         claseConfirmar: 'btn-notify',
         textoSecundario: 'No',
         claseSecundario: 'btn-info',
-        textoCancelar: 'Cerrar',
-        onConfirmar: () => notificarA(otro),
-        onSecundario: () => {},
+        mostrarCancelar: false,
+        onConfirmar: () => {
+          notificarA(otro);
+          if (opciones.abrirEnrutarDespues) {
+            mostrarModalDecision({
+              titulo: 'Enrutar ahora',
+              texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
+              textoConfirmar: 'Enrutar',
+              claseConfirmar: 'btn-route',
+              mostrarSecundario: false,
+              textoCancelar: 'Cerrar',
+              onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
+              onCancelar: () => {}
+            });
+          }
+        },
+        onSecundario: () => {
+          if (opciones.abrirEnrutarDespues) {
+            mostrarModalDecision({
+              titulo: 'Enrutar ahora',
+              texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
+              textoConfirmar: 'Enrutar',
+              claseConfirmar: 'btn-route',
+              mostrarSecundario: false,
+              textoCancelar: 'Cerrar',
+              onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
+              onCancelar: () => {}
+            });
+          }
+        },
         onCancelar: () => {}
       });
     }
