@@ -620,6 +620,112 @@ function abrirWhatsAppPreferirApp(telefono, mensaje) {
   window.open(`https://wa.me/${wa}?text=${texto}`, '_blank');
 }
 
+// --- Teléfonos múltiples ---
+
+function normalizarTelefonosDesdeTexto(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return [];
+
+  // Extrae todos los "bloques" que parezcan teléfono; luego deja solo dígitos.
+  const matches = s.match(/\+?[\d\s().-]{7,}/g) || [];
+  const out = [];
+  const seen = new Set();
+  for (const m of matches) {
+    let t = String(m || '').trim();
+    if (!t) continue;
+    if (t.startsWith('+')) t = t.slice(1);
+    t = t.replace(/\D/g, '');
+    if (t.length < 7) continue;
+    if (!seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  }
+
+  // Heurística para casos donde antes se concatenaron dos teléfonos sin separador.
+  // Ej: "30246933943147153587" (20 dígitos) -> ["3024693394","3147153587"].
+  if (out.length === 1) {
+    const solo = out[0];
+    if (/^\d+$/.test(solo) && solo.length >= 14) {
+      const partes = [];
+      const pushChunks = (chunkLen) => {
+        if (solo.length % chunkLen !== 0) return false;
+        for (let i = 0; i < solo.length; i += chunkLen) {
+          partes.push(solo.slice(i, i + chunkLen));
+        }
+        return partes.length >= 2;
+      };
+
+      // 12 dígitos: 57 + 10 (WhatsApp); 10 dígitos: celular local.
+      if (pushChunks(12) || pushChunks(10)) {
+        const out2 = [];
+        const seen2 = new Set();
+        for (const p of partes) {
+          const t = String(p || '').replace(/\D/g, '');
+          if (t.length < 7) continue;
+          if (!seen2.has(t)) { seen2.add(t); out2.push(t); }
+        }
+        if (out2.length >= 2) return out2;
+      }
+    }
+  }
+  return out;
+}
+
+function obtenerTelefonosPedido(pedido) {
+  if (!pedido) return [];
+  if (Array.isArray(pedido.telefonos) && pedido.telefonos.length) {
+    return pedido.telefonos.map((t) => String(t || '').replace(/\D/g, '')).filter((t) => t.length >= 7);
+  }
+  // Legado: `pedido.telefono` puede venir con dos números en un solo texto.
+  const legacy = normalizarTelefonosDesdeTexto(String(pedido.telefono || ''));
+  return legacy;
+}
+
+function textoTelefonosPedidoParaUI(pedido) {
+  const tels = obtenerTelefonosPedido(pedido);
+  if (tels.length === 0) return '';
+  return tels.join(' - ');
+}
+
+function textoTelefonosPedidoParaInput(pedido) {
+  // Para inputs conviene un separador "pegable" y fácil de editar.
+  return textoTelefonosPedidoParaUI(pedido);
+}
+
+function htmlTelefonosPedidoParaTarjeta(pedido) {
+  const tels = obtenerTelefonosPedido(pedido);
+  if (tels.length === 0) return '';
+  // En una sola línea, separados por guión.
+  return tels.join(' - ');
+}
+
+function seleccionarTelefonoConModal(tels, titulo, onElegir) {
+  const telefonos = (Array.isArray(tels) ? tels : []).filter(Boolean);
+  if (telefonos.length === 0) {
+    mostrarAvisoEnApp('No hay número de teléfono disponible', titulo || 'Contacto');
+    return;
+  }
+  if (telefonos.length === 1) {
+    if (typeof onElegir === 'function') onElegir(telefonos[0], 0, telefonos);
+    return;
+  }
+  const a = telefonos[0];
+  const b = telefonos[1];
+  mostrarModalDecision({
+    titulo: titulo || 'Contacto',
+    texto: '¿A cuál número deseas hacerlo?',
+    textoConfirmar: a,
+    claseConfirmar: 'btn-primary',
+    textoSecundario: b,
+    claseSecundario: 'btn-info',
+    textoCancelar: 'Cancelar',
+    onConfirmar: () => typeof onElegir === 'function' && onElegir(a, 0, telefonos),
+    onSecundario: () => typeof onElegir === 'function' && onElegir(b, 1, telefonos),
+    onCancelar: () => {}
+  });
+}
+
 function pedidoNuevoBase() {
   return {
     assignedTo: null,
@@ -887,6 +993,7 @@ function extraerCamposPedido(bloque) {
   }
 
   let telefono = '';
+  let telefonos = [];
   const telPatrones = [
     new RegExp(
       `📲[^:\\n]*:\\s*([\\s\\S]*?)(?=💰|Producto|Pedido|Horario|¿Todo|Para agilizar|Env[ií]o|https?:|$)`,
@@ -898,12 +1005,11 @@ function extraerCamposPedido(bloque) {
     const m = b.match(re);
     if (m && m[1]) {
       const telRaw = m[1].trim().split('\n')[0].trim();
-      const primerTel = telRaw.match(/\+?[\d\s().-]{7,}/);
-      let digits = primerTel ? primerTel[0].replace(/[^\d+]/g, '') : '';
-      if (digits.startsWith('+')) digits = digits.slice(1);
-      telefono = digits.replace(/\D/g, '');
-      if (telefono.length >= 7) break;
+      telefonos = normalizarTelefonosDesdeTexto(telRaw);
+      telefono = telefonos[0] || '';
+      if (telefono && telefono.length >= 7) break;
       telefono = '';
+      telefonos = [];
     }
   }
 
@@ -960,7 +1066,7 @@ function extraerCamposPedido(bloque) {
     productos = extraerProductosLineasTrasEncabezado(b);
   }
 
-  return { direccion, nombre, telefono, valor, productos };
+  return { direccion, nombre, telefono, telefonos, valor, productos };
 }
 
 function fetchConTimeout(url, opciones, ms) {
@@ -1119,6 +1225,7 @@ async function procesarPedido() {
     id: pedidoId,
     nombre: campos.nombre,
     telefono: campos.telefono,
+    telefonos: Array.isArray(campos.telefonos) ? campos.telefonos : [],
     direccion: campos.direccion,
     productos: campos.productos,
     valor: campos.valor,
@@ -1281,6 +1388,7 @@ async function procesarMultiplesPedidos(texto) {
       id: pedidoId,
       nombre: campos.nombre,
       telefono: campos.telefono,
+      telefonos: Array.isArray(campos.telefonos) ? campos.telefonos : [],
       direccion: campos.direccion,
       productos: campos.productos,
       valor: campos.valor,
@@ -1805,7 +1913,7 @@ function crearTarjetaPedido(pedido, index) {
   div.dataset.index = index;
   div.dataset.id = pedido.id;
 
-  const telefonoLimpio = pedido.telefono ? pedido.telefono.replace(/\D/g, '') : '';
+  const telefonoHtml = htmlTelefonosPedidoParaTarjeta(pedido) || (pedido.telefono ? String(pedido.telefono) : '');
   const valorFormato = parseInt(pedido.valor || 0, 10).toLocaleString('es-CO');
   const btnNoEntregadoHtml = pedido.entregado
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
@@ -1822,11 +1930,10 @@ function crearTarjetaPedido(pedido, index) {
       : '';
   const textoBotonNotificar = pedido.notificadoEnCamino ? 'Volver a notificar' : 'Notificar en camino';
   const btnNotificarHtml =
-    !adminUi && etapaActual === 'notificar'
+    etapaActual === 'notificar'
       ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, { abrirEnrutarDespues: true })"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
       : '';
   const btnNotificarNuevamenteHtml =
-    !adminUi &&
     !pedido.entregado &&
     !pedido.cancelado &&
     pedido.notificadoEnCamino &&
@@ -1865,7 +1972,7 @@ function crearTarjetaPedido(pedido, index) {
     </div>
     <div class="pedido-cliente">${pedido.nombre || 'Cliente no especificado'}</div>
     <div class="pedido-info">
-      <strong>Teléfono:</strong> ${pedido.telefono || 'No especificado'}<br>
+      <strong>Teléfono:</strong> ${telefonoHtml || 'No especificado'}<br>
       <strong>Dirección:</strong> ${pedido.direccion || 'No especificada'}
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
@@ -1882,9 +1989,9 @@ function crearTarjetaPedido(pedido, index) {
       <details class="pedido-dropdown">
         <summary class="btn-info"><i class="fa-solid fa-address-book"></i> Contacto</summary>
         <div class="pedido-dropdown-content">
-          <button class="btn-success" onclick="whatsappLlamar('${telefonoLimpio}')"><i class="fa-brands fa-whatsapp"></i> Llamar por WhatsApp</button>
-          <button class="btn-success" onclick="whatsappMensaje('${telefonoLimpio}')"><i class="fa-brands fa-whatsapp"></i> Mensaje por WhatsApp</button>
-          <button class="btn-info" onclick="llamar('${telefonoLimpio}')"><i class="fa-solid fa-phone"></i> Llamada normal</button>
+          <button class="btn-success" onclick="contactarPedido(${index}, 'wa_call')"><i class="fa-brands fa-whatsapp"></i> Llamar por WhatsApp</button>
+          <button class="btn-success" onclick="contactarPedido(${index}, 'wa_msg')"><i class="fa-brands fa-whatsapp"></i> Mensaje por WhatsApp</button>
+          <button class="btn-info" onclick="contactarPedido(${index}, 'call')"><i class="fa-solid fa-phone"></i> Llamada normal</button>
         </div>
       </details>
       <details class="pedido-dropdown">
@@ -2456,6 +2563,8 @@ function marcarPendiente(index) {
   pedido.enCurso = false;
   pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
+  // Al regresar a pendientes, permitimos volver a notificar al cliente.
+  pedido.notificadoEnCamino = false;
 
   if (posicionOriginal !== null) {
     const [movido] = pedidos.splice(index, 1);
@@ -2617,7 +2726,10 @@ function guardarEdicionPedido() {
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
 
   pedido.nombre = inputNombre ? String(inputNombre.value || '').trim() : '';
-  pedido.telefono = inputTel ? String(inputTel.value || '').trim() : '';
+  const telTexto = inputTel ? String(inputTel.value || '').trim() : '';
+  const tels = normalizarTelefonosDesdeTexto(telTexto);
+  pedido.telefonos = tels;
+  pedido.telefono = tels[0] || telTexto;
   if (taProd) {
     pedido.productos = productosPedidoDesdeTextoPlano(taProd.value);
   }
@@ -2660,7 +2772,7 @@ function editarPedido(index) {
   const inputValor = document.getElementById('editarPedidoValor');
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
   if (inputNombre) inputNombre.value = String(pedido.nombre || '');
-  if (inputTel) inputTel.value = String(pedido.telefono || '');
+  if (inputTel) inputTel.value = textoTelefonosPedidoParaInput(pedido) || String(pedido.telefono || '');
   if (taProd) taProd.value = lineasProductosPedidoNormalizadas(pedido).join('\n');
   if (inputValor) inputValor.value = formatearDigitosMilesEsCo(String(pedido.valor || ''));
   if (inputMapUrl) inputMapUrl.value = String(pedido.mapUrl || '');
@@ -2677,6 +2789,18 @@ function llamar(numero) {
     return;
   }
   window.location.href = `tel:${n}`;
+}
+
+function contactarPedido(index, accion) {
+  const pedido = pedidos[index];
+  if (!pedido) return;
+  const tels = obtenerTelefonosPedido(pedido);
+  const titulo = 'Contacto';
+  seleccionarTelefonoConModal(tels, titulo, (tel) => {
+    if (accion === 'call') llamar(tel);
+    else if (accion === 'wa_call') whatsappLlamar(tel);
+    else if (accion === 'wa_msg') whatsappMensaje(tel);
+  });
 }
 
 function copiarDireccionPedido(index) {
@@ -3486,30 +3610,6 @@ function abrirNavegacionConSelector(index, pedidoId) {
   }
   marcarEnCurso(indexFinal);
 
-  const isAndroid = /Android/i.test(navigator.userAgent);
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  if (isAndroid) {
-    if (u.lat != null && u.lng != null) {
-      const etiqueta = encodeURIComponent(`Pedido ${pedidoId}`);
-      window.location.href = `geo:${u.lat},${u.lng}?q=${u.lat},${u.lng}(${etiqueta})`;
-    } else {
-      const destino = encodeURIComponent(u.direccion || '');
-      window.location.href = `geo:0,0?q=${destino}`;
-    }
-    return;
-  }
-
-  if (isIOS) {
-    if (u.lat != null && u.lng != null) {
-      window.location.href = `maps://?daddr=${u.lat},${u.lng}&dirflg=d`;
-    } else {
-      const destino = encodeURIComponent(u.direccion || '');
-      window.location.href = `maps://?daddr=${destino}&dirflg=d`;
-    }
-    return;
-  }
-
   if (u.lat != null && u.lng != null) {
     window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
   } else {
@@ -3542,43 +3642,20 @@ function abrirNavegacion(tipo, index, pedidoId) {
   marcarEnCurso(indexFinal);
 
   if (tipo === 'waze') {
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     if (u.lat != null && u.lng != null) {
-      if (isMobile) {
-        window.location.href = `waze://?ll=${u.lat},${u.lng}&navigate=yes`;
-      } else {
-        window.open(`https://waze.com/ul?ll=${u.lat},${u.lng}&navigate=yes`, '_blank');
-      }
+      window.open(`https://waze.com/ul?ll=${u.lat},${u.lng}&navigate=yes`, '_blank');
     } else {
       const q = encodeURIComponent(u.direccion);
-      if (isMobile) {
-        window.location.href = `waze://?q=${q}&navigate=yes`;
-      } else {
-        window.open(`https://waze.com/ul?q=${q}&navigate=yes`, '_blank');
-      }
+      window.open(`https://waze.com/ul?q=${q}&navigate=yes`, '_blank');
     }
     return;
   }
 
-  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  const isAndroid = /Android/.test(navigator.userAgent);
   if (u.lat != null && u.lng != null) {
-    if (isIOS) {
-      window.location.href = `comgooglemaps://?daddr=${u.lat},${u.lng}&directionsmode=driving`;
-    } else if (isAndroid) {
-      window.location.href = `google.navigation:q=${u.lat},${u.lng}`;
-    } else {
-      window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
-    }
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${u.lat},${u.lng}&travelmode=driving`, '_blank');
   } else {
     const destino = encodeURIComponent(u.direccion);
-    if (isIOS) {
-      window.location.href = `comgooglemaps://?daddr=${destino}&directionsmode=driving`;
-    } else if (isAndroid) {
-      window.location.href = `google.navigation:q=${destino}`;
-    } else {
-      window.open(`https://www.google.com/maps/dir/?api=1&destination=${destino}&travelmode=driving`, '_blank');
-    }
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${destino}&travelmode=driving`, '_blank');
   }
 }
 
@@ -3785,34 +3862,58 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
     });
     return;
   }
-  const telefonoCliente = pedidoFinal.telefono ? String(pedidoFinal.telefono).replace(/\D/g, '') : '';
-  if (!telefonoCliente) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
+  const tels = obtenerTelefonosPedido(pedidoFinal);
+  if (!tels.length) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
 
   const nombre = pedidoFinal.nombre || 'cliente';
   const precio = parseInt(pedidoFinal.valor || 0, 10).toLocaleString('es-CO');
-  const wa = telefonoCliente.startsWith('57') ? telefonoCliente : `57${telefonoCliente}`;
   const bloquePago = construirBloquePagoNotificacion();
   const mensaje = construirMensajeNotificarEnCamino(nombre, precio, bloquePago);
 
-  abrirWhatsAppConTexto(wa, mensaje);
-  pedidoFinal.notificadoEnCamino = true;
-  guardarPedidos();
-  renderPedidos();
-  if (typeof opciones.onSuccess === 'function') opciones.onSuccess();
-  if (opciones.abrirEnrutarDespues) {
-    mostrarModalDecision({
-      titulo: 'Enrutar ahora',
-      texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
-      textoConfirmar: 'Enrutar',
-      claseConfirmar: 'btn-route',
-      textoSecundario: 'Más tarde',
-      claseSecundario: 'btn-info',
-      textoCancelar: 'Cerrar',
-      onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
-      onSecundario: () => {},
-      onCancelar: () => {}
-    });
-  }
+  const notificarA = (tel) => {
+    const limpio = String(tel || '').replace(/\D/g, '');
+    if (!limpio) return;
+    const wa = limpio.startsWith('57') ? limpio : `57${limpio}`;
+    abrirWhatsAppConTexto(wa, mensaje);
+  };
+
+  seleccionarTelefonoConModal(tels, 'Notificación', (telElegido, idxElegido, lista) => {
+    notificarA(telElegido);
+
+    // Marcar como notificado solo después de elegir/enviar.
+    pedidoFinal.notificadoEnCamino = true;
+    guardarPedidos();
+    renderPedidos();
+    if (typeof opciones.onSuccess === 'function') opciones.onSuccess();
+    if (opciones.abrirEnrutarDespues) {
+      mostrarModalDecision({
+        titulo: 'Enrutar ahora',
+        texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
+        textoConfirmar: 'Enrutar',
+        claseConfirmar: 'btn-route',
+        mostrarSecundario: false,
+        textoCancelar: 'Cerrar',
+        onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
+        onCancelar: () => {}
+      });
+    }
+
+    const otro = Array.isArray(lista) ? lista.find((t, i) => i !== idxElegido) : null;
+    if (otro) {
+      mostrarModalDecision({
+        titulo: 'Notificar al otro número',
+        texto: '¿Quieres notificar también al otro número?',
+        textoConfirmar: 'Sí, notificar',
+        claseConfirmar: 'btn-notify',
+        textoSecundario: 'No',
+        claseSecundario: 'btn-info',
+        textoCancelar: 'Cerrar',
+        onConfirmar: () => notificarA(otro),
+        onSecundario: () => {},
+        onCancelar: () => {}
+      });
+    }
+  });
 }
 
 // --- Mapa: marcadores y ruta ---
@@ -4315,6 +4416,16 @@ function normalizarPedidoEnMemoria(p) {
   if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
   if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
   if (!p.hasOwnProperty('montoEfectivo')) p.montoEfectivo = 0;
+  if (!p.hasOwnProperty('telefonos')) p.telefonos = [];
+  if (!Array.isArray(p.telefonos)) p.telefonos = normalizarTelefonosDesdeTexto(String(p.telefonos || ''));
+  if (p.telefonos.length === 0 && p.telefono) {
+    const legacy = String(p.telefono || '');
+    const tels = normalizarTelefonosDesdeTexto(legacy);
+    if (tels.length) p.telefonos = tels;
+  }
+  if ((!p.telefono || String(p.telefono).trim() === '') && Array.isArray(p.telefonos) && p.telefonos.length) {
+    p.telefono = p.telefonos[0];
+  }
   if (p.entregado) {
     p.enCurso = false;
     p.llegoDestino = false;
@@ -4490,6 +4601,7 @@ function pedidoAObjetoCompacto(p) {
   const o = { i: p.id };
   if (p.nombre) o.n = p.nombre;
   if (p.telefono) o.t = p.telefono;
+  if (Array.isArray(p.telefonos) && p.telefonos.length) o.ts = p.telefonos;
   if (p.direccion) o.d = p.direccion;
   if (p.valor != null && String(p.valor) !== '0') o.v = p.valor;
   if (p.textoOriginal) o.x = p.textoOriginal;
@@ -4526,6 +4638,7 @@ function pedidoDesdeObjetoCompacto(c) {
     id,
     nombre: c.n,
     telefono: c.t,
+    telefonos: Array.isArray(c.ts) ? c.ts : [],
     direccion: c.d,
     valor: c.v != null ? c.v : '0',
     textoOriginal: c.x,
