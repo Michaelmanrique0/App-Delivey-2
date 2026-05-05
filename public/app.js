@@ -1456,21 +1456,26 @@ function uidPedidoAsignado(p) {
   return String(v).trim();
 }
 
+function obtenerValorAReclamarPedido(pedido) {
+  const metodo = pedido && pedido.metodoPagoEntrega ? String(pedido.metodoPagoEntrega) : '';
+  if (metodo === 'pagado_tienda' || metodo === 'es_cambio') return 0;
+  const n = parseInt((pedido && pedido.valor) || 0, 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /** Mismos filtros y sumas que el resumen del mensajero (Nequi, Daviplata, domicilio, etc.). */
 function calcularTotalesEntregaPedidos(arr) {
   const lista = Array.isArray(arr) ? arr : [];
   const totalDelDia = lista
     .filter((p) => !p.cancelado)
-    .reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
+    .reduce((sum, p) => sum + obtenerValorAReclamarPedido(p), 0);
   const recogidoDelDia = lista
     .filter(
       (p) =>
         p.entregado &&
-        !p.noEntregado &&
-        p.metodoPagoEntrega !== 'pagado_tienda' &&
-        p.metodoPagoEntrega !== 'es_cambio'
+        !p.noEntregado
     )
-    .reduce((sum, p) => sum + parseInt(p.valor || 0, 10), 0);
+    .reduce((sum, p) => sum + obtenerValorAReclamarPedido(p), 0);
   const enviosEntregados = lista.filter((p) => p.entregado && !p.noEntregado).length;
   const enviosNoEntregadosEnPunto = lista.filter((p) => p.noEntregado && p.envioRecogido).length;
   const pagoDomiciliario = (enviosEntregados + enviosNoEntregadosEnPunto) * 12000;
@@ -1575,11 +1580,48 @@ function pedidoTieneCoordsValidas(p) {
   );
 }
 
-function pedidoNecesitaCorregirLinkMaps(p) {
+function distanciaMetrosHaversine(a, b) {
+  if (!a || !b) return Infinity;
+  const lat1 = Number(a.lat), lon1 = Number(a.lng);
+  const lat2 = Number(b.lat), lon2 = Number(b.lng);
+  if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) return Infinity;
+  const R = 6371000;
+  const toRad = (x) => (x * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const s1 = Math.sin(dLat / 2);
+  const s2 = Math.sin(dLon / 2);
+  const c = s1 * s1 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * s2 * s2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(c)));
+}
+
+function idsPedidosConCoordsMuyPegadas(lista, umbralMetros) {
+  const out = new Set();
+  const items = (Array.isArray(lista) ? lista : [])
+    .filter((p) => p && !p.cancelado && pedidoTieneCoordsValidas(p))
+    .map((p) => ({ id: Number(p.id), coords: { lat: Number(p.coords.lat), lng: Number(p.coords.lng) } }))
+    .filter((x) => Number.isFinite(x.id));
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const d = distanciaMetrosHaversine(items[i].coords, items[j].coords);
+      if (d <= umbralMetros) {
+        out.add(items[i].id);
+        out.add(items[j].id);
+      }
+    }
+  }
+  return out;
+}
+
+function pedidoNecesitaCorregirLinkMaps(p, opts = {}) {
   if (!p || p.cancelado) return false;
   const url = String(p.mapUrl || '').trim();
   if (!url) return false;
-  if (pedidoTieneCoordsValidas(p)) return false;
+  const idsPegadas = opts && opts.idsPegadas instanceof Set ? opts.idsPegadas : null;
+  if (pedidoTieneCoordsValidas(p)) {
+    if (idsPegadas && idsPegadas.has(Number(p.id))) return true;
+    return false;
+  }
   const ext = extraerCoordenadas(url);
   return !ext;
 }
@@ -1589,7 +1631,9 @@ function renderPanelLinksMapsPendientes() {
   const host = document.getElementById('mapLinksPendientesLista');
   if (!panel || !host) return;
 
-  const pendientes = pedidos.filter(pedidoNecesitaCorregirLinkMaps);
+  const UMBRAL_COORDS_MUY_PEGADAS_M = 30;
+  const idsPegadas = idsPedidosConCoordsMuyPegadas(pedidos, UMBRAL_COORDS_MUY_PEGADAS_M);
+  const pendientes = pedidos.filter((p) => pedidoNecesitaCorregirLinkMaps(p, { idsPegadas }));
   if (!pendientes.length) {
     panel.style.display = 'none';
     host.innerHTML = '';
@@ -1915,7 +1959,7 @@ function crearTarjetaPedido(pedido, index) {
   div.dataset.id = pedido.id;
 
   const telefonoHtml = htmlTelefonosPedidoParaTarjeta(pedido) || (pedido.telefono ? String(pedido.telefono) : '');
-  const valorFormato = parseInt(pedido.valor || 0, 10).toLocaleString('es-CO');
+  const valorFormato = obtenerValorAReclamarPedido(pedido).toLocaleString('es-CO');
   const btnNoEntregadoHtml = pedido.entregado
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
     : '';
@@ -3272,7 +3316,13 @@ function cerrarModalDecision() {
 
 // --- Fotos / WhatsApp Admin ---
 
-let pagoEntregadoPendiente = { index: null, pedidoId: null, enviarWhatsAppAdmin: true };
+let pagoEntregadoPendiente = {
+  index: null,
+  pedidoId: null,
+  enviarWhatsAppAdmin: true,
+  lugarEntrega: null, // 'cliente' | 'porteria'
+  recibidoPor: ''
+};
 
 function parseMontoEntero(valor) {
   const limpio = String(valor || '').replace(/[^\d]/g, '');
@@ -3319,6 +3369,39 @@ function vincularFormateoMilesInput(input) {
   input.addEventListener('input', () => aplicarFormatoMilesEnInput(input));
 }
 
+function mostrarPasoModalPagoEntregado(paso) {
+  const contLugar = document.getElementById('pasoLugarEntrega');
+  const contPago = document.getElementById('pasoMetodoPago');
+  const contPorteria = document.getElementById('pasoPorteriaNombre');
+  if (contLugar) contLugar.style.display = paso === 'lugar' ? 'block' : 'none';
+  if (contPago) contPago.style.display = paso === 'pago' ? 'block' : 'none';
+  if (contPorteria) contPorteria.style.display = paso === 'porteria' ? 'block' : 'none';
+}
+
+function seleccionarLugarEntregaEntregado(lugar) {
+  pagoEntregadoPendiente.lugarEntrega = lugar === 'porteria' ? 'porteria' : 'cliente';
+  pagoEntregadoPendiente.recibidoPor = '';
+  if (pagoEntregadoPendiente.lugarEntrega === 'porteria') {
+    const input = document.getElementById('porteriaRecibeNombre');
+    if (input) input.value = '';
+    mostrarPasoModalPagoEntregado('porteria');
+    return;
+  }
+  mostrarPasoModalPagoEntregado('pago');
+}
+
+function confirmarNombrePorteriaEntregado() {
+  const input = document.getElementById('porteriaRecibeNombre');
+  const nombre = input ? String(input.value || '').trim() : '';
+  if (!nombre) {
+    mostrarToast('Escribe el nombre de quien recibe en portería.', 'warning');
+    return;
+  }
+  pagoEntregadoPendiente.lugarEntrega = 'porteria';
+  pagoEntregadoPendiente.recibidoPor = nombre;
+  mostrarPasoModalPagoEntregado('pago');
+}
+
 function asegurarModalPagoEntregado() {
   let modal = document.getElementById('modalPagoEntregado');
   if (modal) return modal;
@@ -3335,20 +3418,42 @@ function asegurarModalPagoEntregado() {
   modal.innerHTML = `
     <div class="modal-no-entregado-card">
       <h3>Foto evidencia entregado</h3>
-      <p>Selecciona el método de pago del pedido:</p>
-      <div class="modal-no-entregado-actions">
-        ${btnNequi}
-        <button class="btn-info" onclick="seleccionarMetodoPagoEntregado('efectivo')">Efectivo</button>
-        <button class="btn-route" onclick="seleccionarMetodoPagoEntregado('daviplata')">Daviplata</button>
-        ${btnNequiMixto}
-        <button class="btn-route" onclick="seleccionarMetodoPagoEntregado('daviplata_efectivo')">Daviplata + Efectivo</button>
-        <button class="btn-warning" onclick="seleccionarMetodoPagoEntregado('pagado_tienda')">Ya se pagó a la tienda</button>
-        <button class="btn-info" onclick="seleccionarMetodoPagoEntregado('es_cambio')">Es un cambio</button>
+      <div id="pasoLugarEntrega" style="display:block;">
+        <p>¿La entrega se hizo al cliente o se dejó en portería?</p>
+        <div class="modal-no-entregado-actions">
+          <button class="btn-success" onclick="seleccionarLugarEntregaEntregado('cliente')">Entrega al cliente</button>
+          <button class="btn-info" onclick="seleccionarLugarEntregaEntregado('porteria')">Se dejó en portería</button>
+        </div>
       </div>
-      <div id="montosMixtosPago" style="display:none; margin-top: 12px;">
-        <input id="montoDigitalPago" type="text" inputmode="numeric" placeholder="Monto digital" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; margin-bottom:8px;">
-        <input id="montoEfectivoPago" type="text" inputmode="numeric" placeholder="Monto en efectivo" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px;">
-        <button class="btn-primary" style="width:100%; margin-top:8px;" onclick="confirmarMontosMixtosPago()">Confirmar montos</button>
+
+      <div id="pasoPorteriaNombre" style="display:none;">
+        <p>Escribe el nombre de quien recibe en portería:</p>
+        <input id="porteriaRecibeNombre" type="text" placeholder="Nombre de quien recibe" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; margin-bottom:8px;">
+        <div class="modal-no-entregado-actions">
+          <button class="btn-primary" onclick="confirmarNombrePorteriaEntregado()">Continuar</button>
+          <button class="btn-warning" onclick="mostrarPasoModalPagoEntregado('lugar')">Atrás</button>
+        </div>
+      </div>
+
+      <div id="pasoMetodoPago" style="display:none;">
+        <p>Selecciona el método de pago del pedido:</p>
+        <div class="modal-no-entregado-actions">
+          ${btnNequi}
+          <button class="btn-info" onclick="seleccionarMetodoPagoEntregado('efectivo')">Efectivo</button>
+          <button class="btn-route" onclick="seleccionarMetodoPagoEntregado('daviplata')">Daviplata</button>
+          ${btnNequiMixto}
+          <button class="btn-route" onclick="seleccionarMetodoPagoEntregado('daviplata_efectivo')">Daviplata + Efectivo</button>
+          <button class="btn-warning" onclick="seleccionarMetodoPagoEntregado('pagado_tienda')">Ya se pagó a la tienda</button>
+          <button class="btn-info" onclick="seleccionarMetodoPagoEntregado('es_cambio')">Es un cambio</button>
+        </div>
+        <div id="montosMixtosPago" style="display:none; margin-top: 12px;">
+          <input id="montoDigitalPago" type="text" inputmode="numeric" placeholder="Monto digital" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; margin-bottom:8px;">
+          <input id="montoEfectivoPago" type="text" inputmode="numeric" placeholder="Monto en efectivo" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px;">
+          <button class="btn-primary" style="width:100%; margin-top:8px;" onclick="confirmarMontosMixtosPago()">Confirmar montos</button>
+        </div>
+        <div class="modal-no-entregado-actions" style="margin-top: 8px;">
+          <button class="btn-warning" onclick="mostrarPasoModalPagoEntregado('lugar')">Atrás</button>
+        </div>
       </div>
       <button class="modal-no-entregado-close" onclick="cerrarModalPagoEntregado()">Cerrar</button>
     </div>
@@ -3363,6 +3468,7 @@ function cerrarModalPagoEntregado() {
   const modal = document.getElementById('modalPagoEntregado');
   if (!modal) return;
   modal.style.display = 'none';
+  mostrarPasoModalPagoEntregado('lugar');
   const contenedorMontos = document.getElementById('montosMixtosPago');
   const inputDigital = document.getElementById('montoDigitalPago');
   const inputEfectivo = document.getElementById('montoEfectivoPago');
@@ -3372,8 +3478,15 @@ function cerrarModalPagoEntregado() {
 }
 
 function fotoEntregado(index, pedidoId) {
-  pagoEntregadoPendiente = { index, pedidoId, enviarWhatsAppAdmin: true };
+  pagoEntregadoPendiente = {
+    index,
+    pedidoId,
+    enviarWhatsAppAdmin: true,
+    lugarEntrega: null,
+    recibidoPor: ''
+  };
   const modal = asegurarModalPagoEntregado();
+  mostrarPasoModalPagoEntregado('lugar');
   modal.style.display = 'flex';
 }
 
@@ -3406,7 +3519,13 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   const detalleMonto = (pedido.metodoPagoEntrega === 'pagado_tienda' || pedido.metodoPagoEntrega === 'es_cambio')
     ? (pedido.metodoPagoEntrega === 'pagado_tienda' ? 'No aplica (ya se pagó a la tienda)' : 'No aplica (es un cambio)')
     : `$${montoRecibido.toLocaleString('es-CO')}`;
-  const mensaje = `Pedido #${pedidoId} entregado
+  const detalleEntrega =
+    pagoEntregadoPendiente &&
+    pagoEntregadoPendiente.lugarEntrega === 'porteria' &&
+    String(pagoEntregadoPendiente.recibidoPor || '').trim() !== ''
+      ? `Entregado en portería. Recibe: ${String(pagoEntregadoPendiente.recibidoPor || '').trim()}`
+      : '';
+  const mensaje = `Pedido #${pedidoId} entregado${detalleEntrega ? `\n${detalleEntrega}` : ''}
 Monto recibido: ${detalleMonto}
 Producto(s) entregado(s):
 ${productosEntregados}
@@ -3414,7 +3533,13 @@ Método de pago: ${metodoPagoTexto}`;
   if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
     abrirWhatsAppConTexto(numeroAdmin, mensaje);
   }
-  pagoEntregadoPendiente = { index: null, pedidoId: null, enviarWhatsAppAdmin: true };
+  pagoEntregadoPendiente = {
+    index: null,
+    pedidoId: null,
+    enviarWhatsAppAdmin: true,
+    lugarEntrega: null,
+    recibidoPor: ''
+  };
   marcarEntregado(indexFinal);
   notificarSiguientePedido(pedidoId);
 }
