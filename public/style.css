@@ -1210,6 +1210,36 @@ button i,
   background: #d8e0e8;
 }
 
+.modal-no-entregado-card--con-cerrar-x {
+  position: relative;
+  padding-right: 44px;
+}
+
+.modal-no-entregado-close-x {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: #e5e9ee;
+  color: #334155;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-no-entregado-close-x:hover {
+  background: #d8e0e8;
+  color: #1e293b;
+}
+
 .modal-editar-pedido-card {
   width: min(520px, 100%);
   max-height: min(90vh, 640px);

@@ -3515,7 +3515,10 @@ function asegurarModalPagoEntregado() {
   modal.id = 'modalPagoEntregado';
   modal.className = 'modal-no-entregado-backdrop';
   modal.innerHTML = `
-    <div class="modal-no-entregado-card">
+    <div class="modal-no-entregado-card modal-no-entregado-card--con-cerrar-x">
+      <button type="button" class="modal-no-entregado-close-x" onclick="cerrarModalPagoEntregado()" aria-label="Cerrar">
+        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+      </button>
       <h3>Foto evidencia entregado</h3>
       <div id="pasoLugarEntrega" style="display:block;">
         <p>¿La entrega se hizo al cliente o se dejó en portería?</p>
@@ -3554,7 +3557,6 @@ function asegurarModalPagoEntregado() {
           <button class="btn-warning" onclick="mostrarPasoModalPagoEntregado('lugar')">Atrás</button>
         </div>
       </div>
-      <button class="modal-no-entregado-close" onclick="cerrarModalPagoEntregado()">Cerrar</button>
     </div>
   `;
   document.body.appendChild(modal);
