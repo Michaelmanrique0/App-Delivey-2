@@ -402,44 +402,107 @@ function limpiarCachePedidosLocal() {
     }
   } catch (_e) {}
 }
-const CONFIG_NOTIFICACION_DEFAULT = {
-  tieneNequi: true,
-  tieneDaviplata: true,
-  numeroDigital: '3143645061',
-  tieneLlave: true,
-  llavePago: '@NEQUIMIC7057'
-};
+const CONFIG_NOTIFICACION_AYUDA_DEFAULT =
+  'Estos datos se incluyen en el mensaje de WhatsApp cuando notificas al cliente (Nequi, Daviplata, Bre-B). Solo aparecen en el mensaje los medios que marques.';
 
-let configNotificacionPago = cargarConfigNotificacionPago();
+/** Si el usuario guardó la config y luego intenta notificar, se reanuda el envío. */
+let notificacionEnCaminoPendienteTrasConfig = null;
+
+function boolConfigNotificacion(valor, predeterminado) {
+  if (typeof valor === 'boolean') return valor;
+  if (typeof valor === 'string') {
+    const normalizado = valor.trim().toLowerCase();
+    if (normalizado === 'false') return false;
+    if (normalizado === 'true') return true;
+  }
+  return predeterminado;
+}
+
+function parsearConfigNotificacionPago(cfg) {
+  const guardado = cfg && typeof cfg === 'object' ? cfg : {};
+  const numeroLegacy = String(guardado.numeroNequi || guardado.numeroDaviplata || '');
+  const tieneDaviplata = boolConfigNotificacion(guardado.tieneDaviplata, true);
+  const tieneNequi =
+    typeof guardado.tieneNequi === 'undefined'
+      ? tieneDaviplata
+      : boolConfigNotificacion(guardado.tieneNequi, true);
+  const tieneLlave = boolConfigNotificacion(guardado.tieneLlave, true);
+  return {
+    tieneNequi,
+    tieneDaviplata,
+    tieneLlave,
+    numeroDigital: String(guardado.numeroDigital || numeroLegacy || '').replace(/\D/g, ''),
+    llavePago: String(guardado.llavePago || '').trim()
+  };
+}
+
+function mediosPagoNotificacionListos(cfg) {
+  const c = parsearConfigNotificacionPago(cfg);
+  if ((c.tieneNequi || c.tieneDaviplata) && c.numeroDigital) return true;
+  if (c.tieneLlave && c.llavePago) return true;
+  return false;
+}
 
 function cargarConfigNotificacionPago() {
   try {
     const guardado = JSON.parse(localStorage.getItem(CONFIG_NOTIFICACION_KEY) || '{}');
-    const numeroLegacy = String(guardado.numeroNequi || guardado.numeroDaviplata || '');
-    const boolSeguro = (valor, predeterminado) => {
-      if (typeof valor === 'boolean') return valor;
-      if (typeof valor === 'string') {
-        const normalizado = valor.trim().toLowerCase();
-        if (normalizado === 'false') return false;
-        if (normalizado === 'true') return true;
-      }
-      return predeterminado;
-    };
-    const tieneDaviplata = boolSeguro(guardado.tieneDaviplata, true);
-    const tieneNequi =
-      typeof guardado.tieneNequi === 'undefined'
-        ? tieneDaviplata
-        : boolSeguro(guardado.tieneNequi, CONFIG_NOTIFICACION_DEFAULT.tieneNequi);
-    return {
-      tieneNequi,
-      tieneDaviplata,
-      numeroDigital: String(guardado.numeroDigital || numeroLegacy || CONFIG_NOTIFICACION_DEFAULT.numeroDigital),
-      tieneLlave: boolSeguro(guardado.tieneLlave, true),
-      llavePago: String(guardado.llavePago || CONFIG_NOTIFICACION_DEFAULT.llavePago)
-    };
+    return parsearConfigNotificacionPago(guardado);
   } catch (e) {
-    return { ...CONFIG_NOTIFICACION_DEFAULT };
+    return parsearConfigNotificacionPago({});
   }
+}
+
+let configNotificacionPago = cargarConfigNotificacionPago();
+
+function leerConfigNotificacionDesdeUI() {
+  const tieneNequi = document.getElementById('cfgTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
+  const numeroDigital = document.getElementById('cfgNumeroDigital');
+  const tieneLlave = document.getElementById('cfgTieneLlave');
+  const llavePago = document.getElementById('cfgLlavePago');
+  if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return null;
+  return parsearConfigNotificacionPago({
+    tieneNequi: !!tieneNequi.checked,
+    tieneDaviplata: !!tieneDaviplata.checked,
+    numeroDigital: String(numeroDigital.value || '').replace(/\D/g, ''),
+    tieneLlave: !!tieneLlave.checked,
+    llavePago: String(llavePago.value || '').trim()
+  });
+}
+
+function mensajeErrorConfigNotificacion(cfg) {
+  const c = parsearConfigNotificacionPago(cfg);
+  if (!c.tieneNequi && !c.tieneDaviplata && !c.tieneLlave) {
+    return 'Marca al menos un medio de pago (Nequi, Daviplata o Bre-B).';
+  }
+  if ((c.tieneNequi || c.tieneDaviplata) && !c.numeroDigital) {
+    return 'Indica el número para Nequi y/o Daviplata, o desmarca esos medios.';
+  }
+  if (c.tieneLlave && !c.llavePago) {
+    return 'Indica la llave Bre-B, o desmarca ese medio.';
+  }
+  if (!mediosPagoNotificacionListos(c)) {
+    return 'Completa al menos un medio de pago con su número o llave.';
+  }
+  return '';
+}
+
+function actualizarAvisoModalConfigNotificacion() {
+  const ayuda = document.querySelector('#modalConfigNotificacion .config-notificacion-ayuda');
+  if (!ayuda) return;
+  ayuda.textContent = notificacionEnCaminoPendienteTrasConfig
+    ? 'Para enviar la notificación al cliente, completa al menos un medio de pago con número o llave y pulsa Guardar.'
+    : CONFIG_NOTIFICACION_AYUDA_DEFAULT;
+}
+
+function limpiarErrorConfigNotificacion() {
+  const err = document.getElementById('configNotificacionError');
+  if (err) err.textContent = '';
+}
+
+function mostrarErrorConfigNotificacion(texto) {
+  const err = document.getElementById('configNotificacionError');
+  if (err) err.textContent = String(texto || '');
 }
 
 function guardarConfigNotificacionPago() {
@@ -517,11 +580,13 @@ function cargarConfigNotificacionEnUI() {
   const llavePago = document.getElementById('cfgLlavePago');
   if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return;
 
+  configNotificacionPago = parsearConfigNotificacionPago(configNotificacionPago);
   tieneNequi.checked = !!configNotificacionPago.tieneNequi;
   numeroDigital.value = configNotificacionPago.numeroDigital || '';
   tieneDaviplata.checked = !!configNotificacionPago.tieneDaviplata;
   tieneLlave.checked = !!configNotificacionPago.tieneLlave;
   llavePago.value = configNotificacionPago.llavePago || '';
+  limpiarErrorConfigNotificacion();
 
   [tieneNequi, tieneDaviplata, tieneLlave].forEach((el) => {
     el.onchange = () => {
@@ -534,14 +599,22 @@ function cargarConfigNotificacionEnUI() {
 }
 
 function abrirConfigNotificacion() {
+  actualizarAvisoModalConfigNotificacion();
   cargarConfigNotificacionEnUI();
   const modal = document.getElementById('modalConfigNotificacion');
   if (!modal) return;
   modal.style.display = 'flex';
 }
 
+function abrirConfigNotificacionParaNotificar(index, pedidoId, opciones) {
+  notificacionEnCaminoPendienteTrasConfig = { index, pedidoId, opciones: opciones || {} };
+  abrirConfigNotificacion();
+}
+
 function cerrarConfigNotificacion() {
-  // Descarta cambios no guardados y restaura lo persistido
+  notificacionEnCaminoPendienteTrasConfig = null;
+  actualizarAvisoModalConfigNotificacion();
+  limpiarErrorConfigNotificacion();
   cargarConfigNotificacionEnUI();
   const modal = document.getElementById('modalConfigNotificacion');
   if (!modal) return;
@@ -580,6 +653,7 @@ function menuIrAlInicio() {
 
 function abrirConfigNotificacionDesdeMenu() {
   cerrarMenuUsuario();
+  notificacionEnCaminoPendienteTrasConfig = null;
   abrirConfigNotificacion();
 }
 
@@ -591,17 +665,31 @@ function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
   const llavePago = document.getElementById('cfgLlavePago');
   if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return;
 
-  configNotificacionPago = {
-    tieneNequi: !!tieneNequi.checked,
-    tieneDaviplata: !!tieneDaviplata.checked,
-    numeroDigital: String(numeroDigital.value || '').replace(/\D/g, ''),
-    tieneLlave: !!tieneLlave.checked,
-    llavePago: String(llavePago.value || '').trim()
-  };
+  const candidata = leerConfigNotificacionDesdeUI();
+  if (!candidata) return;
+  const errorCfg = mensajeErrorConfigNotificacion(candidata);
+  if (errorCfg) {
+    mostrarErrorConfigNotificacion(errorCfg);
+    return;
+  }
 
+  configNotificacionPago = candidata;
   guardarConfigNotificacionPago();
+  limpiarErrorConfigNotificacion();
+
+  const pendiente = notificacionEnCaminoPendienteTrasConfig;
+  notificacionEnCaminoPendienteTrasConfig = null;
+  actualizarAvisoModalConfigNotificacion();
+
+  const modal = document.getElementById('modalConfigNotificacion');
+  if (modal) modal.style.display = 'none';
+
+  if (pendiente) {
+    notificarEnCamino(pendiente.index, pendiente.pedidoId, pendiente.opciones);
+    return;
+  }
+
   cargarConfigNotificacionEnUI();
-  if (mostrarMensaje) cerrarConfigNotificacion();
   if (mostrarMensaje) {
     mostrarModalDecision({
       titulo: 'Configuración guardada',
@@ -617,6 +705,7 @@ function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
 }
 
 function construirBloquePagoNotificacion() {
+  configNotificacionPago = parsearConfigNotificacionPago(configNotificacionPago);
   const lineas = [];
   if (configNotificacionPago.tieneNequi && configNotificacionPago.numeroDigital) {
     lineas.push(`- Nequi: ${configNotificacionPago.numeroDigital}`);
@@ -4126,6 +4215,12 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
   }
   const tels = obtenerTelefonosPedido(pedidoFinal);
   if (!tels.length) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
+
+  configNotificacionPago = parsearConfigNotificacionPago(configNotificacionPago);
+  if (!mediosPagoNotificacionListos(configNotificacionPago)) {
+    abrirConfigNotificacionParaNotificar(indexFinal, pedidoId, opciones);
+    return;
+  }
 
   const nombre = pedidoFinal.nombre || 'cliente';
   const precio = parseInt(pedidoFinal.valor || 0, 10).toLocaleString('es-CO');
