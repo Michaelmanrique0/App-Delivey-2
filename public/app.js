@@ -645,6 +645,45 @@ function normalizarTextoParaWhatsApp(texto) {
     .replace(/\r\n/g, '\n');
 }
 
+function copiarTextoAlPortapapeles(texto, mensajeExito) {
+  const t = String(texto || '');
+  if (!t) return Promise.resolve(false);
+  const ok = () => {
+    if (mensajeExito) mostrarToast(mensajeExito, 'success');
+    return true;
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(t).then(ok, () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        const copiado = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (copiado) return ok();
+      } catch (_e) {}
+      return false;
+    });
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const copiado = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (copiado) return Promise.resolve(ok());
+  } catch (_e) {}
+  return Promise.resolve(false);
+}
+
 function abrirWhatsAppConTexto(telefono, mensaje) {
   const limpio = String(telefono || '').replace(/\D/g, '');
   if (!limpio) return;
@@ -1518,15 +1557,13 @@ function obtenerValorAReclamarPedido(pedido) {
 /** Mismos filtros y sumas que el resumen del mensajero (Nequi, Daviplata, domicilio, etc.). */
 function calcularTotalesEntregaPedidos(arr) {
   const lista = Array.isArray(arr) ? arr : [];
+  /** Pedidos aún no finalizados: lo que falta cobrar al cliente (sin domicilio). */
   const totalDelDia = lista
-    .filter((p) => !p.cancelado)
+    .filter((p) => !p.cancelado && !p.entregado)
     .reduce((sum, p) => sum + obtenerValorAReclamarPedido(p), 0);
+  /** Suma de valores de pedidos entregados; pagado en tienda / cambio aportan 0. */
   const recogidoDelDia = lista
-    .filter(
-      (p) =>
-        p.entregado &&
-        !p.noEntregado
-    )
+    .filter((p) => p.entregado && !p.noEntregado)
     .reduce((sum, p) => sum + obtenerValorAReclamarPedido(p), 0);
   const enviosEntregados = lista.filter((p) => p.entregado && !p.noEntregado).length;
   const enviosNoEntregadosEnPunto = lista.filter((p) => p.noEntregado && p.envioRecogido).length;
@@ -1545,6 +1582,7 @@ function calcularTotalesEntregaPedidos(arr) {
     totalDelDia > 0 ||
     recogidoDelDia > 0 ||
     pagoDomiciliario > 0 ||
+    entregarTienda > 0 ||
     totalPagadoNequi > 0 ||
     totalPagadoDaviplata > 0 ||
     totalPagadoEfectivo > 0;
@@ -1572,7 +1610,7 @@ function htmlBloqueTotalesResumen(totales, opts = {}) {
     ? ''
     : `<div class="total-item total-total-dia">` +
       `<span class="total-icon icon-total-dia"><i class="fa-solid fa-sack-dollar"></i></span>` +
-      `Total a recoger (día): $${fmt(totales.totalDelDia)}` +
+      `Pendiente por recoger: $${fmt(totales.totalDelDia)}` +
       `</div>`;
   const bloqueNequi = ocultarNequi
     ? ''
@@ -1582,19 +1620,19 @@ function htmlBloqueTotalesResumen(totales, opts = {}) {
       `</div>`;
   return (
     `<div class="totales-resumen">` +
-    bloqueTotalDelDia +
     `<div class="total-item total-recogido-dia">` +
     `<span class="total-icon icon-recogido-dia"><i class="fa-solid fa-sack-dollar"></i></span>` +
-    `Total: $${fmt(totales.recogidoDelDia)}` +
+    `Total recogido en el día: $${fmt(totales.recogidoDelDia)}` +
     `</div>` +
     `<div class="total-item total-pago-domiciliario" style="display:${showPagoDomiciliario}">` +
     `<span class="total-icon icon-pago-domiciliario"><i class="fa-solid fa-motorcycle"></i></span>` +
-    `Pago domiciliario: $${fmt(totales.pagoDomiciliario)}` +
+    `Pago a domiciliario: $${fmt(totales.pagoDomiciliario)}` +
     `</div>` +
     `<div class="total-item total-entregar-tienda">` +
     `<span class="total-icon icon-entregar-tienda"><i class="fa-solid fa-store"></i></span>` +
     `A entregar a tienda: $${fmt(totales.entregarTienda)}` +
     `</div>` +
+    bloqueTotalDelDia +
     bloqueNequi +
     `<div class="total-item total-daviplata" style="display:${showDav}">` +
     `<span class="total-icon icon-daviplata"><i class="fa-solid fa-wallet"></i></span>` +
@@ -1839,6 +1877,8 @@ function renderPedidos() {
     const itemDaviplata = elPagadoDaviplata ? elPagadoDaviplata.closest('.total-item') : null;
     const itemEfectivo = elPagadoEfectivo ? elPagadoEfectivo.closest('.total-item') : null;
     const itemPagoDomiciliario = elPagoDomiciliario ? elPagoDomiciliario.closest('.total-item') : null;
+    const itemEntregarTienda = elEntregarTienda ? elEntregarTienda.closest('.total-item') : null;
+    const itemTotalDelDia = elTotalDelDia ? elTotalDelDia.closest('.total-item') : null;
 
     if (elTotalDelDia) elTotalDelDia.textContent = totales.totalDelDia.toLocaleString('es-CO');
     if (elRecogidoDia) elRecogidoDia.textContent = totales.recogidoDelDia.toLocaleString('es-CO');
@@ -1855,6 +1895,11 @@ function renderPedidos() {
     if (itemEfectivo) itemEfectivo.style.display = totales.totalPagadoEfectivo > 0 ? 'inline-flex' : 'none';
     if (itemPagoDomiciliario)
       itemPagoDomiciliario.style.display = totales.pagoDomiciliario > 0 ? 'inline-flex' : 'none';
+    if (itemEntregarTienda)
+      itemEntregarTienda.style.display =
+        totales.recogidoDelDia > 0 || totales.pagoDomiciliario > 0 ? 'inline-flex' : 'none';
+    if (itemTotalDelDia)
+      itemTotalDelDia.style.display = totales.totalDelDia > 0 ? 'inline-flex' : 'none';
     elResumen.style.display = totales.hayDatos ? 'flex' : 'none';
   }
 
@@ -3012,7 +3057,7 @@ function asegurarModalMensajeSoporte() {
         <label for="textoSoportePersonalizado" class="qr-pedidos-label">Tu mensaje</label>
         <textarea id="textoSoportePersonalizado" class="qr-pedidos-textarea" rows="5" spellcheck="true" placeholder="Ej: Pedido #12, el cliente pide cambiar la dirección…"></textarea>
         <div class="modal-no-entregado-actions">
-          <button type="button" class="btn-primary" onclick="confirmarMensajeSoportePersonalizado()">Enviar por WhatsApp</button>
+          <button type="button" class="btn-primary" onclick="confirmarMensajeSoportePersonalizado()">Copiar y abrir WhatsApp</button>
         </div>
         <button type="button" class="modal-no-entregado-close" onclick="volverPanelSoporteOpciones()">Cerrar</button>
       </div>
@@ -3230,8 +3275,10 @@ function confirmarMensajeSoportePersonalizado() {
   const productosTxt = textoProductosEntregaParaSoporte(pedido);
   const mensaje = `El pedido #${idPedido} ${limpio}\nProductos a entregar:\n${productosTxt}`;
   const wa = obtenerSoporteWhatsApp();
-  abrirWhatsAppPreferirApp(wa, mensaje);
-  cerrarModalMensajeSoporte();
+  void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Adjunta la foto en el chat.').then(() => {
+    abrirWhatsAppPreferirApp(wa, mensaje);
+    cerrarModalMensajeSoporte();
+  });
 }
 
 function cerrarModalMensajeSoporte() {
@@ -3583,7 +3630,9 @@ Producto(s) entregado(s):
 ${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
   if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
-    abrirWhatsAppConTexto(numeroAdmin, mensaje);
+    void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Adjunta la foto de entrega en el chat.').then(() => {
+      abrirWhatsAppConTexto(numeroAdmin, mensaje);
+    });
   }
   pagoEntregadoPendiente = {
     index: null,
