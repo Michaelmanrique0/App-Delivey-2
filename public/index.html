@@ -10,14 +10,16 @@
 <script>
 (function () {
   try {
-    if (sessionStorage.getItem('deliveryVistaApp') === 'usuarios-roles') {
-      var s = document.createElement('style');
-      s.id = 'preRestoreUsuariosRolesStyle';
-      s.textContent =
-        '#mainApp[data-app-main] #appVistaPrincipal{display:none !important;visibility:hidden !important}' +
-        '#mainApp[data-app-main] #pageUsuariosRoles{display:block !important;visibility:visible !important}';
-      document.head.appendChild(s);
-    }
+    if (sessionStorage.getItem('deliveryVistaApp') !== 'usuarios-roles') return;
+    var activeUid = localStorage.getItem('deliveryAuthActiveUserId');
+    var vistaUid = sessionStorage.getItem('deliveryVistaAppUserId');
+    if (!activeUid || !vistaUid || activeUid !== vistaUid) return;
+    var s = document.createElement('style');
+    s.id = 'preRestoreUsuariosRolesStyle';
+    s.textContent =
+      '#mainApp[data-app-main] #appVistaPrincipal{display:none !important;visibility:hidden !important}' +
+      '#mainApp[data-app-main] #pageUsuariosRoles{display:block !important;visibility:visible !important}';
+    document.head.appendChild(s);
   } catch (_e) {}
 })();
 </script>
@@ -43,6 +45,10 @@
         <div class="auth-field-group">
           <label for="loginPass">Contraseña</label>
           <input id="loginPass" name="password" type="password" autocomplete="current-password" required>
+          <label class="auth-check-row" for="loginMostrarPass">
+            <input type="checkbox" id="loginMostrarPass" autocomplete="off">
+            <span>Mostrar contraseña</span>
+          </label>
         </div>
         <button type="submit" class="btn-primary auth-submit">Entrar</button>
         <button type="button" class="auth-link-btn" id="btnRecuperarClave">Recuperar contraseña</button>

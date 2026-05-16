@@ -18,11 +18,22 @@ const CACHE_PEDIDOS_KEY = 'cachePedidos_v1';
 /** Misma clave que antes; datos por usuario vivían en `cachePedidos_v1_<uuid>`. */
 const CACHE_PEDIDOS_LEGACY_KEY = 'cachePedidos_v1';
 
-const AUTH_TOKEN_KEY = 'deliveryAuthToken';
+/** Token legacy (una sola clave); se migra a token por usuario. */
+const AUTH_TOKEN_LEGACY_KEY = 'deliveryAuthToken';
+/** Usuario cuya sesión está activa en esta pestaña/navegador. */
+const AUTH_ACTIVE_USER_KEY = 'deliveryAuthActiveUserId';
+/** Id del usuario dueño del token activo (redundante con AUTH_ACTIVE_USER_KEY). */
+const AUTH_USER_ID_KEY = 'deliveryAuthUserId';
+
+function authTokenStorageKey(userId) {
+  return `deliveryAuthToken_${userId}`;
+}
 /** Pestaña auth guardada al recargar: `login` | `registro` (solo sessionStorage). */
 const AUTH_TAB_SESSION_KEY = 'deliveryAuthTab';
 /** Vista principal de la app tras recargar la pestaña (solo admin: usuarios y roles). */
 const VISTA_APP_SESSION_KEY = 'deliveryVistaApp';
+/** Usuario admin que abrió la vista guardada en sessionStorage. */
+const VISTA_APP_USER_SESSION_KEY = 'deliveryVistaAppUserId';
 const VISTA_APP_USUARIOS_ROLES = 'usuarios-roles';
 /** Mismo id que el `<style>` inyectado en `index.html` antes del primer pintado. */
 const PRE_RESTORE_USUARIOS_ROLES_STYLE_ID = 'preRestoreUsuariosRolesStyle';
@@ -39,19 +50,65 @@ function esSesionMensajero() {
   return !!sesionUsuario && sesionUsuario.role === 'mensajero';
 }
 
-function getAuthToken() {
+function getAuthActiveUserId() {
   try {
-    return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+    return localStorage.getItem(AUTH_ACTIVE_USER_KEY) || '';
   } catch (_e) {
     return '';
   }
 }
 
-function setAuthToken(token) {
+function getAuthToken() {
   try {
-    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
-    else localStorage.removeItem(AUTH_TOKEN_KEY);
+    const activeId = getAuthActiveUserId();
+    if (activeId) {
+      return localStorage.getItem(authTokenStorageKey(activeId)) || '';
+    }
+    return localStorage.getItem(AUTH_TOKEN_LEGACY_KEY) || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+function setAuthToken(token, userId) {
+  try {
+    if (token && userId != null && userId !== '') {
+      const uid = String(userId);
+      localStorage.setItem(authTokenStorageKey(uid), token);
+      localStorage.setItem(AUTH_ACTIVE_USER_KEY, uid);
+      localStorage.setItem(AUTH_USER_ID_KEY, uid);
+      localStorage.removeItem(AUTH_TOKEN_LEGACY_KEY);
+    } else {
+      const activeId = getAuthActiveUserId();
+      if (activeId) localStorage.removeItem(authTokenStorageKey(activeId));
+      localStorage.removeItem(AUTH_ACTIVE_USER_KEY);
+      localStorage.removeItem(AUTH_USER_ID_KEY);
+      localStorage.removeItem(AUTH_TOKEN_LEGACY_KEY);
+    }
   } catch (_e) {}
+}
+
+function getAuthUserId() {
+  return getAuthActiveUserId();
+}
+
+function migrarTokenLegacySiHaceFalta(userId) {
+  try {
+    const legacy = localStorage.getItem(AUTH_TOKEN_LEGACY_KEY);
+    if (!legacy || !userId) return;
+    const uid = String(userId);
+    if (!localStorage.getItem(authTokenStorageKey(uid))) {
+      localStorage.setItem(authTokenStorageKey(uid), legacy);
+    }
+    localStorage.setItem(AUTH_ACTIVE_USER_KEY, uid);
+    localStorage.setItem(AUTH_USER_ID_KEY, uid);
+    localStorage.removeItem(AUTH_TOKEN_LEGACY_KEY);
+  } catch (_e) {}
+}
+
+function getCachePedidosStorageKey() {
+  if (!sesionUsuario?.id) return CACHE_PEDIDOS_KEY;
+  return `${CACHE_PEDIDOS_KEY}_${sesionUsuario.id}`;
 }
 
 async function apiFetch(path, options = {}) {
@@ -316,22 +373,14 @@ function exponerDebugAppDelivery() {
 }
 
 function migrarCachePedidosDesdeClavesAntiguas() {
+  if (!sesionUsuario?.id) return;
   try {
-    if (localStorage.getItem(CACHE_PEDIDOS_KEY)) return;
-    const legacy = localStorage.getItem(CACHE_PEDIDOS_LEGACY_KEY);
-    if (legacy) {
-      localStorage.setItem(CACHE_PEDIDOS_KEY, legacy);
-      return;
-    }
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && /^cachePedidos_v1_/.test(k)) {
-        const raw = localStorage.getItem(k);
-        if (raw) {
-          localStorage.setItem(CACHE_PEDIDOS_KEY, raw);
-          return;
-        }
-      }
+    const userKey = getCachePedidosStorageKey();
+    if (localStorage.getItem(userKey)) return;
+    const legacyUserKey = `${CACHE_PEDIDOS_LEGACY_KEY}_${sesionUsuario.id}`;
+    const legacyUser = localStorage.getItem(legacyUserKey);
+    if (legacyUser) {
+      localStorage.setItem(userKey, legacyUser);
     }
   } catch (_e) {}
 }
@@ -346,8 +395,11 @@ function normalizarUuidAsignacion(raw) {
 
 function limpiarCachePedidosLocal() {
   try {
-    localStorage.removeItem(CACHE_PEDIDOS_KEY);
-    localStorage.removeItem(CACHE_PEDIDOS_LEGACY_KEY);
+    const userKey = getCachePedidosStorageKey();
+    if (userKey) localStorage.removeItem(userKey);
+    if (sesionUsuario?.id) {
+      localStorage.removeItem(`${CACHE_PEDIDOS_LEGACY_KEY}_${sesionUsuario.id}`);
+    }
   } catch (_e) {}
 }
 const CONFIG_NOTIFICACION_DEFAULT = {
@@ -396,7 +448,7 @@ function guardarConfigNotificacionPago() {
 
 function cargarCachePedidos() {
   try {
-    const raw = localStorage.getItem(CACHE_PEDIDOS_KEY);
+    const raw = localStorage.getItem(getCachePedidosStorageKey());
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -410,7 +462,7 @@ function guardarCachePedidos() {
   try {
     const lista = Array.isArray(pedidos) ? pedidos : [];
     const dedup = deduplicarPedidosPorId(lista);
-    localStorage.setItem(CACHE_PEDIDOS_KEY, JSON.stringify(dedup));
+    localStorage.setItem(getCachePedidosStorageKey(), JSON.stringify(dedup));
   } catch (err) {
     console.error('[app-delivery] No se pudo guardar en localStorage:', err);
     mostrarToast(
@@ -5364,7 +5416,26 @@ function cerrarSesionApp() {
 }
 
 async function entrarAppConSesion(user) {
+  const usuarioAnteriorId = sesionUsuario?.id;
+  const cambioUsuario =
+    usuarioAnteriorId != null && String(usuarioAnteriorId) !== String(user.id);
+
+  if (user.role !== 'admin') {
+    limpiarVistaAppSesion();
+    quitarEstiloPreRestoreUsuariosRoles();
+    asegurarVistaPrincipalVisibleTrasPerderPreRestore();
+  }
+
+  if (cambioUsuario) {
+    pedidos = [];
+    nextPedidoId = 1;
+    limpiarCachePedidosLocal();
+  }
+
   sesionUsuario = user;
+  const tokenActual = getAuthToken();
+  if (tokenActual) setAuthToken(tokenActual, user.id);
+
   document.documentElement.classList.remove('auth-layout');
   document.body.classList.remove('auth-layout');
   const pa = document.getElementById('pantallaAuth');
@@ -5377,6 +5448,15 @@ async function entrarAppConSesion(user) {
   }
   aplicarVisibilidadPorRol();
   await iniciarApp();
+}
+
+function configurarMostrarContrasenaLogin() {
+  const chk = document.getElementById('loginMostrarPass');
+  const input = document.getElementById('loginPass');
+  if (!chk || !input) return;
+  chk.addEventListener('change', () => {
+    input.type = chk.checked ? 'text' : 'password';
+  });
 }
 
 function switchAuthTab(which) {
@@ -5413,12 +5493,14 @@ async function onSubmitLogin(ev) {
     if (err) err.textContent = 'Escribe el correo con el que te registraste.';
     return;
   }
+  limpiarVistaAppSesion();
+  quitarEstiloPreRestoreUsuariosRoles();
   try {
     const data = await apiJson('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ login, password: p }),
     });
-    setAuthToken(data.token);
+    setAuthToken(data.token, data.user.id);
     await entrarAppConSesion(data.user);
   } catch (e) {
     if (err) err.textContent = String(e.message || e);
@@ -5445,7 +5527,7 @@ async function onSubmitRegistro(ev) {
       method: 'POST',
       body: JSON.stringify({ username: u, email, password: p }),
     });
-    setAuthToken(data.token);
+    setAuthToken(data.token, data.user.id);
     authHayUsuarios = true;
     await entrarAppConSesion(data.user);
   } catch (e) {
@@ -5633,7 +5715,7 @@ async function guardarNuevaContrasenaModalRecuperar() {
       method: 'POST',
       body: JSON.stringify({ token, password: p1 }),
     });
-    setAuthToken(data.token);
+    setAuthToken(data.token, data.user.id);
     cerrarModalRecuperarClave();
     resetUiModalRecuperarClave();
     await entrarAppConSesion(data.user);
@@ -5715,7 +5797,7 @@ async function guardarNuevaContrasenaDesdeReset() {
       method: 'POST',
       body: JSON.stringify({ token, password: p1 }),
     });
-    setAuthToken(data.token);
+    setAuthToken(data.token, data.user.id);
     cancelarVistaResetPassword();
     await entrarAppConSesion(data.user);
   } catch (e) {
@@ -5857,12 +5939,16 @@ function asegurarVistaPrincipalVisibleTrasPerderPreRestore() {
 function guardarVistaAppSesionUsuariosRoles() {
   try {
     sessionStorage.setItem(VISTA_APP_SESSION_KEY, VISTA_APP_USUARIOS_ROLES);
+    if (sesionUsuario?.id != null) {
+      sessionStorage.setItem(VISTA_APP_USER_SESSION_KEY, String(sesionUsuario.id));
+    }
   } catch (_e) {}
 }
 
 function limpiarVistaAppSesion() {
   try {
     sessionStorage.removeItem(VISTA_APP_SESSION_KEY);
+    sessionStorage.removeItem(VISTA_APP_USER_SESSION_KEY);
   } catch (_e) {}
 }
 
@@ -6071,10 +6157,21 @@ async function iniciarFlujoAuth() {
   if (token && !enVistaResetUrl) {
     try {
       const me = await apiJson('/api/me', { method: 'GET' });
-      await entrarAppConSesion(me.user);
-      return;
+      migrarTokenLegacySiHaceFalta(me.user.id);
+      const storedUid = getAuthUserId();
+      if (storedUid && String(me.user.id) !== storedUid) {
+        setAuthToken('');
+        limpiarVistaAppSesion();
+        quitarEstiloPreRestoreUsuariosRoles();
+      } else {
+        setAuthToken(token, me.user.id);
+        await entrarAppConSesion(me.user);
+        return;
+      }
     } catch (_e) {
       setAuthToken('');
+      limpiarVistaAppSesion();
+      quitarEstiloPreRestoreUsuariosRoles();
     }
   }
 
@@ -6126,6 +6223,7 @@ async function iniciarFlujoAuth() {
     if (tabReg) tabReg.addEventListener('click', () => switchAuthTab('registro'));
     const fl = document.getElementById('formLogin');
     if (fl) fl.addEventListener('submit', onSubmitLogin);
+    configurarMostrarContrasenaLogin();
     const fr = document.getElementById('formRegistro');
     if (fr) fr.addEventListener('submit', onSubmitRegistro);
     document.getElementById('btnRecuperarClave')?.addEventListener('click', () => abrirModalRecuperarClave());
@@ -6158,6 +6256,41 @@ async function iniciarFlujoAuth() {
   }
 }
 
+function sincronizarSesionDesdeOtraPestana() {
+  if (!sesionUsuario) return;
+  const token = getAuthToken();
+  if (!token) {
+    cerrarSesionApp();
+    return;
+  }
+  void (async () => {
+    try {
+      const me = await apiJson('/api/me', { method: 'GET' });
+      if (String(me.user.id) === String(sesionUsuario.id)) return;
+      setAuthToken(token, me.user.id);
+      await entrarAppConSesion(me.user);
+      mostrarToast(
+        `Sesión actualizada: ahora estás como ${me.user.username} (${me.user.role === 'admin' ? 'Administrador' : 'Mensajero'}).`,
+        'info',
+        8000
+      );
+    } catch (_e) {
+      setAuthToken('');
+      window.location.reload();
+    }
+  })();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  window.addEventListener('storage', (ev) => {
+    if (
+      ev.key === AUTH_ACTIVE_USER_KEY ||
+      ev.key === AUTH_USER_ID_KEY ||
+      ev.key === AUTH_TOKEN_LEGACY_KEY ||
+      (ev.key && String(ev.key).startsWith('deliveryAuthToken_'))
+    ) {
+      sincronizarSesionDesdeOtraPestana();
+    }
+  });
   void iniciarFlujoAuth();
 });

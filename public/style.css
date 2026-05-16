@@ -1905,6 +1905,27 @@ button i,
   text-align: left;
 }
 
+.auth-check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+  font-size: 14px;
+  font-weight: 500;
+  color: #4b5563;
+  cursor: pointer;
+  user-select: none;
+}
+
+.auth-check-row input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--triad-a);
+}
+
 .auth-submit {
   margin-top: 0.35rem;
   width: 100%;
