@@ -1114,6 +1114,37 @@ button i,
   margin: 0;
 }
 
+.config-check--destacado {
+  margin-bottom: 0.85rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  background: #f0f7ff;
+  border: 1px solid #cfe2ff;
+}
+
+.config-notificacion-ayuda {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.config-aviso-medios-tienda {
+  margin: 0 0 0.85rem;
+}
+
+.medios-pago-tienda-admin {
+  margin: 1.25rem 0 1.5rem;
+  padding: 1rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.medios-pago-tienda-form {
+  max-width: 420px;
+}
+
 .modal-no-entregado-backdrop {
   position: fixed;
   inset: 0;

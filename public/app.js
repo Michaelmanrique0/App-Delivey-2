@@ -12,7 +12,6 @@ let nextPedidoId = 1;
 let vistaPedidosActual = 'pendientes';
 let vistaPedidosSeleccionadaManual = false;
 const TELEFONO_SOPORTE = '3213153165';
-const CONFIG_NOTIFICACION_KEY = 'configNotificacionPago';
 /** Pedidos en este dispositivo (sin login). */
 const CACHE_PEDIDOS_KEY = 'cachePedidos_v1';
 /** Misma clave que antes; datos por usuario vivían en `cachePedidos_v1_<uuid>`. */
@@ -403,10 +402,29 @@ function limpiarCachePedidosLocal() {
   } catch (_e) {}
 }
 const CONFIG_NOTIFICACION_AYUDA_DEFAULT =
-  'Estos datos se incluyen en el mensaje de WhatsApp cuando notificas al cliente (Nequi, Daviplata, Bre-B). Solo aparecen en el mensaje los medios que marques.';
+  'Configura tus medios de pago personales o marca la opción de usar los de la tienda. Se incluyen en el WhatsApp al notificar al cliente.';
 
 /** Si el usuario guardó la config y luego intenta notificar, se reanuda el envío. */
 let notificacionEnCaminoPendienteTrasConfig = null;
+
+let paymentConfigEstado = {
+  personal: mediosPagoVacio(),
+  usarMediosTienda: false,
+  tienda: mediosPagoVacio(),
+  effective: mediosPagoVacio(),
+};
+
+function mediosPagoVacio() {
+  return {
+    tieneNequi: false,
+    tieneDaviplata: false,
+    numeroNequi: '',
+    numeroDaviplata: '',
+    nombreTitular: '',
+    tieneLlave: false,
+    llavePago: '',
+  };
+}
 
 function boolConfigNotificacion(valor, predeterminado) {
   if (typeof valor === 'boolean') return valor;
@@ -418,81 +436,67 @@ function boolConfigNotificacion(valor, predeterminado) {
   return predeterminado;
 }
 
-function parsearConfigNotificacionPago(cfg) {
-  const guardado = cfg && typeof cfg === 'object' ? cfg : {};
-  const numeroLegacy = String(guardado.numeroNequi || guardado.numeroDaviplata || '');
-  const tieneDaviplata = boolConfigNotificacion(guardado.tieneDaviplata, true);
-  const tieneNequi =
-    typeof guardado.tieneNequi === 'undefined'
-      ? tieneDaviplata
-      : boolConfigNotificacion(guardado.tieneNequi, true);
-  const tieneLlave = boolConfigNotificacion(guardado.tieneLlave, true);
+function parsearMediosPagoCliente(cfg) {
+  const g = cfg && typeof cfg === 'object' ? cfg : {};
+  const legacyNum = String(g.numeroDigital || '').replace(/\D/g, '');
+  let numeroNequi = String(g.numeroNequi || '').replace(/\D/g, '');
+  let numeroDaviplata = String(g.numeroDaviplata || '').replace(/\D/g, '');
+  if (!numeroNequi && legacyNum) numeroNequi = legacyNum;
+  if (!numeroDaviplata && legacyNum) numeroDaviplata = legacyNum;
   return {
-    tieneNequi,
-    tieneDaviplata,
-    tieneLlave,
-    numeroDigital: String(guardado.numeroDigital || numeroLegacy || '').replace(/\D/g, ''),
-    llavePago: String(guardado.llavePago || '').trim()
+    tieneNequi: boolConfigNotificacion(g.tieneNequi, false),
+    tieneDaviplata: boolConfigNotificacion(g.tieneDaviplata, false),
+    numeroNequi,
+    numeroDaviplata,
+    nombreTitular: String(g.nombreTitular || '').trim(),
+    tieneLlave: boolConfigNotificacion(g.tieneLlave, false),
+    llavePago: String(g.llavePago || '').trim(),
   };
 }
 
 function mediosPagoNotificacionListos(cfg) {
-  const c = parsearConfigNotificacionPago(cfg);
-  if ((c.tieneNequi || c.tieneDaviplata) && c.numeroDigital) return true;
+  const c = parsearMediosPagoCliente(cfg);
+  if (c.tieneNequi && c.numeroNequi) return true;
+  if (c.tieneDaviplata && c.numeroDaviplata) return true;
   if (c.tieneLlave && c.llavePago) return true;
   return false;
 }
 
-function cargarConfigNotificacionPago() {
-  try {
-    const guardado = JSON.parse(localStorage.getItem(CONFIG_NOTIFICACION_KEY) || '{}');
-    return parsearConfigNotificacionPago(guardado);
-  } catch (e) {
-    return parsearConfigNotificacionPago({});
-  }
-}
-
-let configNotificacionPago = cargarConfigNotificacionPago();
-
-function leerConfigNotificacionDesdeUI() {
-  const tieneNequi = document.getElementById('cfgTieneNequi');
-  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
-  const numeroDigital = document.getElementById('cfgNumeroDigital');
-  const tieneLlave = document.getElementById('cfgTieneLlave');
-  const llavePago = document.getElementById('cfgLlavePago');
-  if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return null;
-  return parsearConfigNotificacionPago({
-    tieneNequi: !!tieneNequi.checked,
-    tieneDaviplata: !!tieneDaviplata.checked,
-    numeroDigital: String(numeroDigital.value || '').replace(/\D/g, ''),
-    tieneLlave: !!tieneLlave.checked,
-    llavePago: String(llavePago.value || '').trim()
-  });
-}
-
-function mensajeErrorConfigNotificacion(cfg) {
-  const c = parsearConfigNotificacionPago(cfg);
+function mensajeErrorMediosPago(cfg) {
+  const c = parsearMediosPagoCliente(cfg);
   if (!c.tieneNequi && !c.tieneDaviplata && !c.tieneLlave) {
     return 'Marca al menos un medio de pago (Nequi, Daviplata o Bre-B).';
   }
-  if ((c.tieneNequi || c.tieneDaviplata) && !c.numeroDigital) {
-    return 'Indica el número para Nequi y/o Daviplata, o desmarca esos medios.';
+  if (c.tieneNequi && !c.numeroNequi) {
+    return 'Indica el número de Nequi o desmarca ese medio.';
+  }
+  if (c.tieneDaviplata && !c.numeroDaviplata) {
+    return 'Indica el número de Daviplata o desmarca ese medio.';
   }
   if (c.tieneLlave && !c.llavePago) {
-    return 'Indica la llave Bre-B, o desmarca ese medio.';
+    return 'Indica la llave Bre-B o desmarca ese medio.';
   }
   if (!mediosPagoNotificacionListos(c)) {
-    return 'Completa al menos un medio de pago con su número o llave.';
+    return 'Completa al menos un medio de pago con sus datos.';
   }
   return '';
 }
 
 function actualizarAvisoModalConfigNotificacion() {
   const ayuda = document.querySelector('#modalConfigNotificacion .config-notificacion-ayuda');
-  if (!ayuda) return;
-  ayuda.textContent = notificacionEnCaminoPendienteTrasConfig
-    ? 'Para enviar la notificación al cliente, completa al menos un medio de pago con número o llave y pulsa Guardar.'
-    : CONFIG_NOTIFICACION_AYUDA_DEFAULT;
+  const avisoTienda = document.getElementById('cfgAvisoMediosTienda');
+  if (ayuda) {
+    ayuda.textContent = notificacionEnCaminoPendienteTrasConfig
+      ? 'Para enviar la notificación al cliente, completa tus medios de pago o usa los de la tienda y pulsa Guardar.'
+      : CONFIG_NOTIFICACION_AYUDA_DEFAULT;
+  }
+  if (avisoTienda) {
+    const listo = mediosPagoNotificacionListos(paymentConfigEstado.tienda);
+    avisoTienda.textContent = listo
+      ? 'Usarás los medios de pago configurados por la tienda en el panel de administración.'
+      : 'La tienda aún no tiene medios de pago configurados. El administrador debe completarlos en Usuarios y roles.';
+    avisoTienda.style.display = document.getElementById('cfgUsarMediosTienda')?.checked ? 'block' : 'none';
+  }
 }
 
 function limpiarErrorConfigNotificacion() {
@@ -505,8 +509,81 @@ function mostrarErrorConfigNotificacion(texto) {
   if (err) err.textContent = String(texto || '');
 }
 
-function guardarConfigNotificacionPago() {
-  localStorage.setItem(CONFIG_NOTIFICACION_KEY, JSON.stringify(configNotificacionPago));
+function limpiarErrorMediosPagoTienda() {
+  const err = document.getElementById('configTiendaError');
+  if (err) err.textContent = '';
+}
+
+function mostrarErrorMediosPagoTienda(texto) {
+  const err = document.getElementById('configTiendaError');
+  if (err) err.textContent = String(texto || '');
+}
+
+async function refrescarPaymentConfigDesdeServidor() {
+  if (!sesionUsuario) return;
+  try {
+    const data = await apiJson('/api/payment-config/me', { method: 'GET' });
+    paymentConfigEstado = {
+      personal: parsearMediosPagoCliente(data.personal),
+      usarMediosTienda: !!data.usarMediosTienda,
+      tienda: parsearMediosPagoCliente(data.tienda),
+      effective: parsearMediosPagoCliente(data.effective),
+    };
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function refrescarMediosPagoTiendaDesdeServidor() {
+  if (!esSesionAdmin()) return;
+  try {
+    const data = await apiJson('/api/payment-config/tienda', { method: 'GET' });
+    paymentConfigEstado.tienda = parsearMediosPagoCliente(data.tienda);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function leerMediosPagoPersonalDesdeUI() {
+  const tieneNequi = document.getElementById('cfgTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
+  const numeroNequi = document.getElementById('cfgNumeroNequi');
+  const numeroDaviplata = document.getElementById('cfgNumeroDaviplata');
+  const tieneLlave = document.getElementById('cfgTieneLlave');
+  const llavePago = document.getElementById('cfgLlavePago');
+  if (!tieneNequi || !tieneDaviplata || !numeroNequi || !numeroDaviplata || !tieneLlave || !llavePago) {
+    return null;
+  }
+  return parsearMediosPagoCliente({
+    tieneNequi: !!tieneNequi.checked,
+    tieneDaviplata: !!tieneDaviplata.checked,
+    numeroNequi: String(numeroNequi.value || '').replace(/\D/g, ''),
+    numeroDaviplata: String(numeroDaviplata.value || '').replace(/\D/g, ''),
+    tieneLlave: !!tieneLlave.checked,
+    llavePago: String(llavePago.value || '').trim(),
+  });
+}
+
+function leerMediosPagoTiendaDesdeUI() {
+  const tieneNequi = document.getElementById('cfgTiendaTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTiendaTieneDaviplata');
+  const numeroNequi = document.getElementById('cfgTiendaNumeroNequi');
+  const numeroDaviplata = document.getElementById('cfgTiendaNumeroDaviplata');
+  const nombreTitular = document.getElementById('cfgTiendaNombreTitular');
+  const tieneLlave = document.getElementById('cfgTiendaTieneLlave');
+  const llavePago = document.getElementById('cfgTiendaLlavePago');
+  if (!tieneNequi || !tieneDaviplata || !numeroNequi || !numeroDaviplata || !nombreTitular || !tieneLlave || !llavePago) {
+    return null;
+  }
+  return parsearMediosPagoCliente({
+    tieneNequi: !!tieneNequi.checked,
+    tieneDaviplata: !!tieneDaviplata.checked,
+    numeroNequi: String(numeroNequi.value || '').replace(/\D/g, ''),
+    numeroDaviplata: String(numeroDaviplata.value || '').replace(/\D/g, ''),
+    nombreTitular: String(nombreTitular.value || '').trim(),
+    tieneLlave: !!tieneLlave.checked,
+    llavePago: String(llavePago.value || '').trim(),
+  });
 }
 
 function cargarCachePedidos() {
@@ -559,46 +636,108 @@ function deduplicarPedidosPorId(lista) {
 }
 
 function actualizarVisibilidadConfigNotificacion() {
-  const numeroDigitalWrap = document.getElementById('cfgNumeroDigitalWrap');
+  const usarTienda = document.getElementById('cfgUsarMediosTienda');
+  const personalWrap = document.getElementById('cfgPersonalMediosWrap');
+  const nequiWrap = document.getElementById('cfgNumeroNequiWrap');
+  const daviWrap = document.getElementById('cfgNumeroDaviplataWrap');
   const llaveWrap = document.getElementById('cfgLlaveWrap');
   const tieneNequi = document.getElementById('cfgTieneNequi');
   const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
   const tieneLlave = document.getElementById('cfgTieneLlave');
-  const mostrarNumeroDigital = !!(
-    (tieneNequi && tieneNequi.checked) ||
-    (tieneDaviplata && tieneDaviplata.checked)
-  );
-  if (numeroDigitalWrap) numeroDigitalWrap.style.display = mostrarNumeroDigital ? 'block' : 'none';
-  if (llaveWrap && tieneLlave) llaveWrap.style.display = tieneLlave.checked ? 'block' : 'none';
+  const usaTienda = !!(usarTienda && usarTienda.checked);
+  if (personalWrap) {
+    personalWrap.style.display = usaTienda ? 'none' : 'block';
+    personalWrap.querySelectorAll('input').forEach((inp) => {
+      inp.disabled = usaTienda;
+    });
+  }
+  if (nequiWrap) nequiWrap.style.display = !usaTienda && tieneNequi?.checked ? 'block' : 'none';
+  if (daviWrap) daviWrap.style.display = !usaTienda && tieneDaviplata?.checked ? 'block' : 'none';
+  if (llaveWrap) llaveWrap.style.display = !usaTienda && tieneLlave?.checked ? 'block' : 'none';
+  actualizarAvisoModalConfigNotificacion();
+}
+
+function actualizarVisibilidadMediosPagoTienda() {
+  const nequiWrap = document.getElementById('cfgTiendaNumeroNequiWrap');
+  const daviWrap = document.getElementById('cfgTiendaNumeroDaviplataWrap');
+  const nombreWrap = document.getElementById('cfgTiendaNombreTitularWrap');
+  const llaveWrap = document.getElementById('cfgTiendaLlaveWrap');
+  const tieneNequi = document.getElementById('cfgTiendaTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTiendaTieneDaviplata');
+  const tieneLlave = document.getElementById('cfgTiendaTieneLlave');
+  const mostrarNum = !!((tieneNequi && tieneNequi.checked) || (tieneDaviplata && tieneDaviplata.checked));
+  if (nequiWrap) nequiWrap.style.display = tieneNequi?.checked ? 'block' : 'none';
+  if (daviWrap) daviWrap.style.display = tieneDaviplata?.checked ? 'block' : 'none';
+  if (nombreWrap) nombreWrap.style.display = mostrarNum ? 'block' : 'none';
+  if (llaveWrap) llaveWrap.style.display = tieneLlave?.checked ? 'block' : 'none';
 }
 
 function cargarConfigNotificacionEnUI() {
+  const usarTienda = document.getElementById('cfgUsarMediosTienda');
   const tieneNequi = document.getElementById('cfgTieneNequi');
   const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
-  const numeroDigital = document.getElementById('cfgNumeroDigital');
+  const numeroNequi = document.getElementById('cfgNumeroNequi');
+  const numeroDaviplata = document.getElementById('cfgNumeroDaviplata');
   const tieneLlave = document.getElementById('cfgTieneLlave');
   const llavePago = document.getElementById('cfgLlavePago');
-  if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return;
+  if (!usarTienda || !tieneNequi || !tieneDaviplata || !numeroNequi || !numeroDaviplata || !tieneLlave || !llavePago) {
+    return;
+  }
 
-  configNotificacionPago = parsearConfigNotificacionPago(configNotificacionPago);
-  tieneNequi.checked = !!configNotificacionPago.tieneNequi;
-  numeroDigital.value = configNotificacionPago.numeroDigital || '';
-  tieneDaviplata.checked = !!configNotificacionPago.tieneDaviplata;
-  tieneLlave.checked = !!configNotificacionPago.tieneLlave;
-  llavePago.value = configNotificacionPago.llavePago || '';
+  const usarTiendaRow = usarTienda.closest('.config-check--destacado');
+  if (usarTiendaRow) usarTiendaRow.style.display = esSesionMensajero() ? '' : 'none';
+
+  const p = paymentConfigEstado.personal;
+  usarTienda.checked = !!paymentConfigEstado.usarMediosTienda;
+  tieneNequi.checked = !!p.tieneNequi;
+  tieneDaviplata.checked = !!p.tieneDaviplata;
+  numeroNequi.value = p.numeroNequi || '';
+  numeroDaviplata.value = p.numeroDaviplata || '';
+  tieneLlave.checked = !!p.tieneLlave;
+  llavePago.value = p.llavePago || '';
   limpiarErrorConfigNotificacion();
 
+  if (!usarTienda.dataset.bound) {
+    usarTienda.dataset.bound = '1';
+    usarTienda.onchange = () => actualizarVisibilidadConfigNotificacion();
+  }
   [tieneNequi, tieneDaviplata, tieneLlave].forEach((el) => {
-    el.onchange = () => {
-      actualizarVisibilidadConfigNotificacion();
-    };
+    el.onchange = () => actualizarVisibilidadConfigNotificacion();
   });
-  if (numeroDigital) numeroDigital.onchange = () => {};
-  if (llavePago) llavePago.onchange = () => {};
   actualizarVisibilidadConfigNotificacion();
 }
 
-function abrirConfigNotificacion() {
+function cargarMediosPagoTiendaEnUI() {
+  const tieneNequi = document.getElementById('cfgTiendaTieneNequi');
+  const tieneDaviplata = document.getElementById('cfgTiendaTieneDaviplata');
+  const numeroNequi = document.getElementById('cfgTiendaNumeroNequi');
+  const numeroDaviplata = document.getElementById('cfgTiendaNumeroDaviplata');
+  const nombreTitular = document.getElementById('cfgTiendaNombreTitular');
+  const tieneLlave = document.getElementById('cfgTiendaTieneLlave');
+  const llavePago = document.getElementById('cfgTiendaLlavePago');
+  if (!tieneNequi || !tieneDaviplata || !numeroNequi || !numeroDaviplata || !nombreTitular || !tieneLlave || !llavePago) {
+    return;
+  }
+  const t = paymentConfigEstado.tienda;
+  tieneNequi.checked = !!t.tieneNequi;
+  tieneDaviplata.checked = !!t.tieneDaviplata;
+  numeroNequi.value = t.numeroNequi || '';
+  numeroDaviplata.value = t.numeroDaviplata || '';
+  nombreTitular.value = t.nombreTitular || '';
+  tieneLlave.checked = !!t.tieneLlave;
+  llavePago.value = t.llavePago || '';
+  limpiarErrorMediosPagoTienda();
+  [tieneNequi, tieneDaviplata, tieneLlave].forEach((el) => {
+    if (!el.dataset.bound) {
+      el.dataset.bound = '1';
+      el.onchange = () => actualizarVisibilidadMediosPagoTienda();
+    }
+  });
+  actualizarVisibilidadMediosPagoTienda();
+}
+
+async function abrirConfigNotificacion() {
+  await refrescarPaymentConfigDesdeServidor();
   actualizarAvisoModalConfigNotificacion();
   cargarConfigNotificacionEnUI();
   const modal = document.getElementById('modalConfigNotificacion');
@@ -608,7 +747,7 @@ function abrirConfigNotificacion() {
 
 function abrirConfigNotificacionParaNotificar(index, pedidoId, opciones) {
   notificacionEnCaminoPendienteTrasConfig = { index, pedidoId, opciones: opciones || {} };
-  abrirConfigNotificacion();
+  void abrirConfigNotificacion();
 }
 
 function cerrarConfigNotificacion() {
@@ -654,33 +793,52 @@ function menuIrAlInicio() {
 function abrirConfigNotificacionDesdeMenu() {
   cerrarMenuUsuario();
   notificacionEnCaminoPendienteTrasConfig = null;
-  abrirConfigNotificacion();
+  void abrirConfigNotificacion();
 }
 
-function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
-  const tieneNequi = document.getElementById('cfgTieneNequi');
-  const tieneDaviplata = document.getElementById('cfgTieneDaviplata');
-  const numeroDigital = document.getElementById('cfgNumeroDigital');
-  const tieneLlave = document.getElementById('cfgTieneLlave');
-  const llavePago = document.getElementById('cfgLlavePago');
-  if (!tieneNequi || !numeroDigital || !tieneDaviplata || !tieneLlave || !llavePago) return;
+async function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
+  const usarTienda = document.getElementById('cfgUsarMediosTienda');
+  if (!usarTienda) return;
 
-  const candidata = leerConfigNotificacionDesdeUI();
-  if (!candidata) return;
-  const errorCfg = mensajeErrorConfigNotificacion(candidata);
-  if (errorCfg) {
-    mostrarErrorConfigNotificacion(errorCfg);
+  const usarMediosTienda = !!usarTienda.checked;
+  const personal = leerMediosPagoPersonalDesdeUI();
+  if (!personal) return;
+
+  if (!usarMediosTienda) {
+    const errorCfg = mensajeErrorMediosPago(personal);
+    if (errorCfg) {
+      mostrarErrorConfigNotificacion(errorCfg);
+      return;
+    }
+  } else if (!mediosPagoNotificacionListos(paymentConfigEstado.tienda)) {
+    mostrarErrorConfigNotificacion(
+      'La tienda aún no tiene medios de pago configurados. Pide al administrador que los complete en Usuarios y roles.'
+    );
     return;
   }
 
-  configNotificacionPago = candidata;
-  guardarConfigNotificacionPago();
   limpiarErrorConfigNotificacion();
-
   const pendiente = notificacionEnCaminoPendienteTrasConfig;
   notificacionEnCaminoPendienteTrasConfig = null;
-  actualizarAvisoModalConfigNotificacion();
 
+  try {
+    const data = await apiJson('/api/payment-config/me', {
+      method: 'PUT',
+      body: JSON.stringify({ personal, usarMediosTienda }),
+    });
+    paymentConfigEstado = {
+      personal: parsearMediosPagoCliente(data.personal),
+      usarMediosTienda: !!data.usarMediosTienda,
+      tienda: parsearMediosPagoCliente(data.tienda),
+      effective: parsearMediosPagoCliente(data.effective),
+    };
+  } catch (e) {
+    mostrarErrorConfigNotificacion(String(e.message || e));
+    if (pendiente) notificacionEnCaminoPendienteTrasConfig = pendiente;
+    return;
+  }
+
+  actualizarAvisoModalConfigNotificacion();
   const modal = document.getElementById('modalConfigNotificacion');
   if (modal) modal.style.display = 'none';
 
@@ -691,32 +849,45 @@ function guardarConfigNotificacionDesdeUI(mostrarMensaje = true) {
 
   cargarConfigNotificacionEnUI();
   if (mostrarMensaje) {
-    mostrarModalDecision({
-      titulo: 'Configuración guardada',
-      texto: 'La configuración de medios de pago fue actualizada.',
-      textoConfirmar: 'Aceptar',
-      claseConfirmar: 'btn-success',
-      mostrarSecundario: false,
-      textoCancelar: 'Cerrar',
-      onConfirmar: () => {},
-      onCancelar: () => {}
+    mostrarToast('Tus medios de pago quedaron guardados.', 'success');
+  }
+}
+
+async function guardarMediosPagoTiendaDesdeUI() {
+  const tienda = leerMediosPagoTiendaDesdeUI();
+  if (!tienda) return;
+  const errorCfg = mensajeErrorMediosPago(tienda);
+  if (errorCfg) {
+    mostrarErrorMediosPagoTienda(errorCfg);
+    return;
+  }
+  limpiarErrorMediosPagoTienda();
+  try {
+    const data = await apiJson('/api/payment-config/tienda', {
+      method: 'PUT',
+      body: JSON.stringify({ tienda }),
     });
+    paymentConfigEstado.tienda = parsearMediosPagoCliente(data.tienda);
+    mostrarToast('Medios de pago de la tienda guardados.', 'success');
+    cargarMediosPagoTiendaEnUI();
+  } catch (e) {
+    mostrarErrorMediosPagoTienda(String(e.message || e));
   }
 }
 
 function construirBloquePagoNotificacion() {
-  configNotificacionPago = parsearConfigNotificacionPago(configNotificacionPago);
+  const cfg = parsearMediosPagoCliente(paymentConfigEstado.effective);
   const lineas = [];
-  if (configNotificacionPago.tieneNequi && configNotificacionPago.numeroDigital) {
-    lineas.push(`- Nequi: ${configNotificacionPago.numeroDigital}`);
+  const nom = cfg.nombreTitular ? ` (${cfg.nombreTitular})` : '';
+  if (cfg.tieneNequi && cfg.numeroNequi) {
+    lineas.push(`- Nequi: ${cfg.numeroNequi}${nom}`);
   }
-  if (configNotificacionPago.tieneDaviplata && configNotificacionPago.numeroDigital) {
-    lineas.push(`- Daviplata: ${configNotificacionPago.numeroDigital}`);
+  if (cfg.tieneDaviplata && cfg.numeroDaviplata) {
+    lineas.push(`- Daviplata: ${cfg.numeroDaviplata}${nom}`);
   }
-  if (configNotificacionPago.tieneLlave && configNotificacionPago.llavePago) {
-    lineas.push(`- Bre-B: ${configNotificacionPago.llavePago}`);
+  if (cfg.tieneLlave && cfg.llavePago) {
+    lineas.push(`- Bre-B: ${cfg.llavePago}`);
   }
-
   if (lineas.length === 0) {
     return 'Actualmente no hay medios de pago digitales configurados.';
   }
@@ -780,6 +951,20 @@ function abrirWhatsAppConTexto(telefono, mensaje) {
   const texto = encodeURIComponent(normalizarTextoParaWhatsApp(mensaje));
   const url = `https://api.whatsapp.com/send?phone=${wa}&text=${texto}&src=delivery&t=${Date.now()}`;
   window.open(url, '_blank');
+}
+
+/** Abre el chat de WhatsApp con el contacto, sin mensaje prellenado. */
+function abrirWhatsAppChat(telefono) {
+  const limpio = String(telefono || '').replace(/\D/g, '');
+  if (!limpio) return;
+  const wa = limpio.startsWith('57') ? limpio : `57${limpio}`;
+  const ua = navigator.userAgent || '';
+  const esMovil = /Android|iPhone|iPad|iPod|Mobile|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  if (esMovil) {
+    window.location.href = `whatsapp://send?phone=${wa}`;
+    return;
+  }
+  window.open(`https://wa.me/${wa}`, '_blank');
 }
 
 /**
@@ -3142,11 +3327,11 @@ function asegurarModalMensajeSoporte() {
         <button type="button" class="modal-no-entregado-close" onclick="cerrarModalMensajeSoporte()">Cerrar</button>
       </div>
       <div id="panelSoportePersonalizado" class="panel-soporte-personalizado" style="display:none;">
-        <p class="soporte-personalizado-ayuda">Escribe solo el texto del medio. Debajo se añadirá &ldquo;Productos a entregar:&rdquo; y cada producto en un renglón aparte.</p>
+        <p class="soporte-personalizado-ayuda">Escribe solo el texto del medio. Debajo se añadirá &ldquo;Productos a entregar:&rdquo; y cada producto en un renglón aparte. Al copiar, pega el mensaje tú en el chat de WhatsApp.</p>
         <label for="textoSoportePersonalizado" class="qr-pedidos-label">Tu mensaje</label>
         <textarea id="textoSoportePersonalizado" class="qr-pedidos-textarea" rows="5" spellcheck="true" placeholder="Ej: Pedido #12, el cliente pide cambiar la dirección…"></textarea>
         <div class="modal-no-entregado-actions">
-          <button type="button" class="btn-primary" onclick="confirmarMensajeSoportePersonalizado()">Copiar y abrir WhatsApp</button>
+          <button type="button" class="btn-primary" onclick="confirmarMensajeSoportePersonalizado()">Copiar mensaje</button>
         </div>
         <button type="button" class="modal-no-entregado-close" onclick="volverPanelSoporteOpciones()">Cerrar</button>
       </div>
@@ -3364,8 +3549,8 @@ function confirmarMensajeSoportePersonalizado() {
   const productosTxt = textoProductosEntregaParaSoporte(pedido);
   const mensaje = `El pedido #${idPedido} ${limpio}\nProductos a entregar:\n${productosTxt}`;
   const wa = obtenerSoporteWhatsApp();
-  void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Adjunta la foto en el chat.').then(() => {
-    abrirWhatsAppPreferirApp(wa, mensaje);
+  void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat de WhatsApp.').then((copiado) => {
+    if (copiado) abrirWhatsAppChat(wa);
     cerrarModalMensajeSoporte();
   });
 }
@@ -3721,8 +3906,8 @@ Producto(s) entregado(s):
 ${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
   if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
-    void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Adjunta la foto de entrega en el chat.').then(() => {
-      abrirWhatsAppConTexto(numeroAdmin, mensaje);
+    void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.').then((copiado) => {
+      if (copiado) abrirWhatsAppChat(numeroAdmin);
     });
   }
   pagoEntregadoPendiente = {
@@ -4195,7 +4380,7 @@ ${bloquePago}
 Gracias por tu compra ${nombre}`;
 }
 
-function notificarEnCamino(index, pedidoId, opciones = {}) {
+async function notificarEnCamino(index, pedidoId, opciones = {}) {
   const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedidoFinal = pedido || pedidos[indexFinal];
@@ -4216,8 +4401,8 @@ function notificarEnCamino(index, pedidoId, opciones = {}) {
   const tels = obtenerTelefonosPedido(pedidoFinal);
   if (!tels.length) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
 
-  configNotificacionPago = parsearConfigNotificacionPago(configNotificacionPago);
-  if (!mediosPagoNotificacionListos(configNotificacionPago)) {
+  await refrescarPaymentConfigDesdeServidor();
+  if (!mediosPagoNotificacionListos(paymentConfigEstado.effective)) {
     abrirConfigNotificacionParaNotificar(indexFinal, pedidoId, opciones);
     return;
   }
@@ -5593,6 +5778,7 @@ async function entrarAppConSesion(user) {
     el.textContent = `${user.username} · ${user.role === 'admin' ? 'Administrador' : 'Mensajero'}`;
   }
   aplicarVisibilidadPorRol();
+  await refrescarPaymentConfigDesdeServidor();
   await iniciarApp();
 }
 
@@ -6121,6 +6307,8 @@ async function mostrarUiPaginaUsuariosRoles() {
       page.removeAttribute('aria-hidden');
     }
     await refrescarListaUsuariosPagina();
+    await refrescarMediosPagoTiendaDesdeServidor();
+    cargarMediosPagoTiendaEnUI();
     scrollToTopApp();
   } finally {
     quitarEstiloPreRestoreUsuariosRoles();

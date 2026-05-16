@@ -164,6 +164,12 @@
       <p class="config-notificacion-ayuda">Estos datos se incluyen en el mensaje de WhatsApp cuando notificas al cliente (Nequi, Daviplata, Bre-B). Solo aparecen en el mensaje los medios que marques.</p>
       <p id="configNotificacionError" class="auth-form-error config-notificacion-error" role="alert"></p>
       <div class="configuracion-notificacion-body">
+        <label class="config-check config-check--destacado">
+          <input type="checkbox" id="cfgUsarMediosTienda">
+          Utilizar medios de pago de la tienda
+        </label>
+        <p id="cfgAvisoMediosTienda" class="config-notificacion-ayuda config-aviso-medios-tienda" style="display:none;"></p>
+        <div id="cfgPersonalMediosWrap">
         <div class="config-check-row">
           <label class="config-check">
             <input type="checkbox" id="cfgTieneNequi">
@@ -174,21 +180,24 @@
             Tengo Daviplata
           </label>
         </div>
-        <div id="cfgNumeroDigitalWrap">
-          <label for="cfgNumeroDigital">Número para Nequi y Daviplata</label>
-          <input type="text" id="cfgNumeroDigital" inputmode="numeric" placeholder="Ej: 3143645061">
+        <div id="cfgNumeroNequiWrap">
+          <label for="cfgNumeroNequi">Número Nequi</label>
+          <input type="text" id="cfgNumeroNequi" inputmode="numeric" placeholder="Ej: 3001234567" autocomplete="off">
         </div>
-
+        <div id="cfgNumeroDaviplataWrap">
+          <label for="cfgNumeroDaviplata">Número Daviplata</label>
+          <input type="text" id="cfgNumeroDaviplata" inputmode="numeric" placeholder="Ej: 3001234567" autocomplete="off">
+        </div>
         <label class="config-check">
           <input type="checkbox" id="cfgTieneLlave">
           Tengo Bre-B
         </label>
         <div id="cfgLlaveWrap">
-          <label for="cfgLlavePago">Bre-B</label>
-          <input type="text" id="cfgLlavePago" placeholder="Ej: @NEQUIMIC7057">
+          <label for="cfgLlavePago">Llave Bre-B</label>
+          <input type="text" id="cfgLlavePago" placeholder="Ej: @micuenta" autocomplete="off">
         </div>
-
-        <button class="btn-primary" type="button" onclick="guardarConfigNotificacionDesdeUI()">Guardar configuración</button>
+        </div>
+        <button class="btn-primary" type="button" onclick="void guardarConfigNotificacionDesdeUI()">Guardar configuración</button>
       </div>
       <button class="modal-no-entregado-close" type="button" onclick="cerrarConfigNotificacion()">Cerrar</button>
     </div>
@@ -287,6 +296,46 @@
   <section id="pageUsuariosRoles" class="page-usuarios-roles" style="display:none;" aria-hidden="true">
     <h2 class="page-usuarios-roles-titulo"><i class="fa-solid fa-users" aria-hidden="true"></i> Usuarios y roles</h2>
     <p class="modal-usuarios-ayuda page-usuarios-roles-intro">Crea mensajeros u otros administradores y cambia roles cuando lo necesites.</p>
+
+    <section id="sectionMediosPagoTienda" class="medios-pago-tienda-admin">
+      <h3 class="page-usuarios-asignaciones-titulo"><i class="fa-solid fa-store" aria-hidden="true"></i> Medios de pago de la tienda</h3>
+      <p class="config-notificacion-ayuda">Los mensajeros que activen &ldquo;Utilizar medios de pago de la tienda&rdquo; usarán estos datos en la notificación al cliente.</p>
+      <p id="configTiendaError" class="auth-form-error config-notificacion-error" role="alert"></p>
+      <div class="medios-pago-tienda-form configuracion-notificacion-body">
+        <div class="config-check-row">
+          <label class="config-check">
+            <input type="checkbox" id="cfgTiendaTieneNequi">
+            Tienda tiene Nequi
+          </label>
+          <label class="config-check">
+            <input type="checkbox" id="cfgTiendaTieneDaviplata">
+            Tienda tiene Daviplata
+          </label>
+        </div>
+        <div id="cfgTiendaNumeroNequiWrap">
+          <label for="cfgTiendaNumeroNequi">Número Nequi</label>
+          <input type="text" id="cfgTiendaNumeroNequi" inputmode="numeric" placeholder="Ej: 3001234567" autocomplete="off">
+        </div>
+        <div id="cfgTiendaNumeroDaviplataWrap">
+          <label for="cfgTiendaNumeroDaviplata">Número Daviplata</label>
+          <input type="text" id="cfgTiendaNumeroDaviplata" inputmode="numeric" placeholder="Ej: 3001234567" autocomplete="off">
+        </div>
+        <div id="cfgTiendaNombreTitularWrap">
+          <label for="cfgTiendaNombreTitular">Nombre que aparece en Nequi / Daviplata</label>
+          <input type="text" id="cfgTiendaNombreTitular" placeholder="Ej: Valero Store" autocomplete="off">
+        </div>
+        <label class="config-check">
+          <input type="checkbox" id="cfgTiendaTieneLlave">
+          Tienda tiene Bre-B
+        </label>
+        <div id="cfgTiendaLlaveWrap">
+          <label for="cfgTiendaLlavePago">Llave Bre-B</label>
+          <input type="text" id="cfgTiendaLlavePago" placeholder="Ej: @micuenta" autocomplete="off">
+        </div>
+        <button type="button" class="btn-primary" onclick="void guardarMediosPagoTiendaDesdeUI()">Guardar medios de la tienda</button>
+      </div>
+    </section>
+
     <div id="usuariosRolesLista" class="modal-usuarios-lista page-usuarios-lista"></div>
 
     <h3 class="page-usuarios-asignaciones-titulo"><i class="fa-solid fa-motorcycle" aria-hidden="true"></i> Pedidos asignados por mensajero</h3>

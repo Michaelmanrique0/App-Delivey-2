@@ -27,6 +27,16 @@ const {
   consumePasswordResetToken,
   deleteUserById,
 } = require('./data');
+const {
+  parsePaymentConfig,
+  paymentConfigListo,
+  validatePaymentConfig,
+  getStorePaymentConfig,
+  setStorePaymentConfig,
+  getUserPaymentSettings,
+  setUserPaymentSettings,
+  resolveEffectivePaymentConfig,
+} = require('./paymentConfig');
 
 const PORT = Number(process.env.PORT || 3847);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-delivery-cambia-esto-en-produccion';
@@ -372,6 +382,91 @@ app.post(
 app.get('/api/me', asyncHandler(authMiddleware), (req, res) => {
   res.json({ user: req.user });
 });
+
+// --- Medios de pago (tienda + personal por mensajero) ---
+
+app.get(
+  '/api/payment-config/me',
+  asyncHandler(authMiddleware),
+  asyncHandler(async (req, res) => {
+    const tienda = await getStorePaymentConfig();
+    if (req.user.role === 'admin') {
+      res.json({
+        role: 'admin',
+        tienda,
+        personal: tienda,
+        usarMediosTienda: false,
+        effective: tienda,
+      });
+      return;
+    }
+    const usuario = await getUserPaymentSettings(req.user.id);
+    const effective = resolveEffectivePaymentConfig(usuario, tienda);
+    res.json({
+      role: 'mensajero',
+      tienda,
+      personal: usuario.personal,
+      usarMediosTienda: usuario.usarMediosTienda,
+      effective,
+    });
+  })
+);
+
+app.put(
+  '/api/payment-config/me',
+  asyncHandler(authMiddleware),
+  asyncHandler(async (req, res) => {
+    if (req.user.role !== 'mensajero') {
+      res.status(403).json({ error: 'Solo mensajeros configuran medios personales aquí' });
+      return;
+    }
+    const usarMediosTienda = !!req.body?.usarMediosTienda;
+    const personal = parsePaymentConfig(req.body?.personal || {});
+    const tienda = await getStorePaymentConfig();
+    if (usarMediosTienda) {
+      if (!paymentConfigListo(tienda)) {
+        res.status(400).json({
+          error: 'La tienda aún no tiene medios de pago configurados. Pide al administrador que los complete.',
+        });
+        return;
+      }
+    } else {
+      const err = validatePaymentConfig(personal);
+      if (err) {
+        res.status(400).json({ error: err });
+        return;
+      }
+    }
+    await setUserPaymentSettings(req.user.id, { personal, usarMediosTienda });
+    const effective = resolveEffectivePaymentConfig({ personal, usarMediosTienda }, tienda);
+    res.json({ ok: true, personal, usarMediosTienda, tienda, effective });
+  })
+);
+
+app.get(
+  '/api/payment-config/tienda',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    res.json({ tienda: await getStorePaymentConfig() });
+  })
+);
+
+app.put(
+  '/api/payment-config/tienda',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const tienda = parsePaymentConfig(req.body?.tienda || req.body || {});
+    const err = validatePaymentConfig(tienda);
+    if (err) {
+      res.status(400).json({ error: err });
+      return;
+    }
+    await setStorePaymentConfig(tienda);
+    res.json({ ok: true, tienda });
+  })
+);
 
 // --- Users (admin) ---
 
