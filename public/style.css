@@ -1114,6 +1114,60 @@ button i,
   margin: 0;
 }
 
+.banner-avisos-telefono {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 1rem;
+}
+
+.banner-aviso-telefono-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #f59e0b;
+  background: #fffbeb;
+  color: #78350f;
+}
+
+.banner-aviso-telefono-texto {
+  flex: 1 1 220px;
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.banner-aviso-telefono-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.banner-aviso-telefono-acciones .btn-primary {
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+}
+
+.banner-aviso-telefono-cerrar {
+  border: none;
+  background: transparent;
+  color: #92400e;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.banner-aviso-telefono-cerrar:hover {
+  background: rgba(146, 64, 14, 0.1);
+}
+
 .config-check--destacado {
   margin-bottom: 0.85rem;
   padding: 0.65rem 0.75rem;

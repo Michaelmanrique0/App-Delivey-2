@@ -1037,6 +1037,184 @@ function normalizarTelefonosDesdeTexto(raw) {
   return out;
 }
 
+const LONGITUD_TELEFONO_LOCAL = 10;
+
+function digitosTelefonoLocalCelular(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('57') && d.length > LONGITUD_TELEFONO_LOCAL) {
+    d = d.slice(2);
+  }
+  return d;
+}
+
+function analizarTelefonoLocalCelular(raw) {
+  const digitos = digitosTelefonoLocalCelular(raw);
+  const esperado = LONGITUD_TELEFONO_LOCAL;
+  const rawTxt = String(raw || '').trim();
+  if (!digitos) {
+    return {
+      valido: false,
+      digitos: '',
+      raw: rawTxt,
+      cantidad: 0,
+      tipo: 'faltan',
+      diferencia: esperado,
+      mensaje: `Pedido sin teléfono detectado: faltan ${esperado} números (deben ser ${esperado}).`,
+    };
+  }
+  if (digitos.length < esperado) {
+    const falta = esperado - digitos.length;
+    return {
+      valido: false,
+      digitos,
+      raw: rawTxt,
+      cantidad: digitos.length,
+      tipo: 'faltan',
+      diferencia: falta,
+      mensaje: `Teléfono con ${digitos.length} números: faltan ${falta} (deben ser ${esperado}). Número detectado: ${digitos}.`,
+    };
+  }
+  if (digitos.length > esperado) {
+    const sobra = digitos.length - esperado;
+    return {
+      valido: false,
+      digitos,
+      raw: rawTxt,
+      cantidad: digitos.length,
+      tipo: 'sobran',
+      diferencia: sobra,
+      mensaje: `Teléfono con ${digitos.length} números: sobran ${sobra} (deben ser ${esperado}). Número detectado: ${digitos}.`,
+    };
+  }
+  return { valido: true, digitos, raw: rawTxt, cantidad: digitos.length };
+}
+
+function construirAvisoTelefonoDesdeCampos(campos) {
+  const lista =
+    Array.isArray(campos?.telefonos) && campos.telefonos.length
+      ? campos.telefonos
+      : campos?.telefono
+        ? [campos.telefono]
+        : [];
+  if (!lista.length) {
+    const analisis = analizarTelefonoLocalCelular('');
+    return {
+      mensaje: analisis.mensaje,
+      tipo: analisis.tipo,
+      diferencia: analisis.diferencia,
+      digitos: analisis.digitos,
+      raw: analisis.raw,
+    };
+  }
+  const invalidos = lista.map((t) => analizarTelefonoLocalCelular(t)).filter((a) => !a.valido);
+  if (!invalidos.length) return null;
+  const primero = invalidos[0];
+  const extra =
+    invalidos.length > 1 ? ` (${invalidos.length} números con problema en el pedido)` : '';
+  return {
+    mensaje: primero.mensaje + extra,
+    tipo: primero.tipo,
+    diferencia: primero.diferencia,
+    digitos: primero.digitos,
+    raw: primero.raw,
+  };
+}
+
+function sincronizarAvisoTelefonoPedido(pedido) {
+  if (!pedido) return;
+  const campos = {
+    telefono: pedido.telefono,
+    telefonos: obtenerTelefonosPedido(pedido),
+  };
+  const aviso = construirAvisoTelefonoDesdeCampos(campos);
+  if (aviso) pedido.avisoTelefono = aviso;
+  else delete pedido.avisoTelefono;
+}
+
+function construirMensajeNotificarVendedorTelefono(pedido) {
+  const aviso = pedido?.avisoTelefono;
+  if (!aviso) return '';
+  const idPedido = pedido.id != null ? pedido.id : 'N/A';
+  const nombre = String(pedido.nombre || '').trim() || 'Sin nombre';
+  const productos = textoProductosEntregaParaSoporte(pedido);
+  const detalle =
+    aviso.tipo === 'sobran'
+      ? `Sobran ${aviso.diferencia} número(s).`
+      : `Faltan ${aviso.diferencia} número(s).`;
+  const numeroTxt = aviso.digitos
+    ? `Número detectado: ${aviso.digitos} (${aviso.cantidad != null ? aviso.cantidad : aviso.digitos.length} dígitos).`
+    : 'No se detectó número de teléfono en el pedido.';
+  return `Pedido #${idPedido} — teléfono del cliente incorrecto
+
+Cliente: ${nombre}
+${numeroTxt}
+${detalle} Deben ser ${LONGITUD_TELEFONO_LOCAL} números.
+
+Producto(s):
+${productos}
+
+Por favor revisar y corregir el pedido.`;
+}
+
+function actualizarBannerAvisosTelefono() {
+  const host = document.getElementById('bannerAvisosTelefono');
+  if (!host) return;
+  const pendientes = pedidos.filter((p) => p && p.avisoTelefono && !p.cancelado);
+  if (!pendientes.length) {
+    host.style.display = 'none';
+    host.innerHTML = '';
+    return;
+  }
+  host.style.display = 'flex';
+  host.innerHTML = pendientes
+    .map((p) => {
+      const id = p.id;
+      const msg = String(p.avisoTelefono.mensaje || 'Teléfono incorrecto.');
+      const titulo = `Pedido #${id}: ${msg}`;
+      return (
+        '<div class="banner-aviso-telefono-item" data-pedido-id="' +
+        id +
+        '">' +
+        '<p class="banner-aviso-telefono-texto"><strong>Pedido #' +
+        id +
+        ':</strong> ' +
+        msg.replace(/</g, '&lt;') +
+        '</p>' +
+        '<div class="banner-aviso-telefono-acciones">' +
+        '<button type="button" class="btn-primary" onclick="notificarVendedorTelefonoInvalido(' +
+        id +
+        ')"><i class="fa-brands fa-whatsapp" aria-hidden="true"></i> Notificar al vendedor</button>' +
+        '<button type="button" class="banner-aviso-telefono-cerrar" onclick="descartarAvisoTelefonoPedido(' +
+        id +
+        ')" aria-label="Cerrar aviso">×</button>' +
+        '</div></div>'
+      );
+    })
+    .join('');
+}
+
+function descartarAvisoTelefonoPedido(pedidoId) {
+  const pedido = pedidos.find((p) => p && Number(p.id) === Number(pedidoId));
+  if (!pedido) return;
+  delete pedido.avisoTelefono;
+  guardarPedidos();
+  actualizarBannerAvisosTelefono();
+}
+
+function notificarVendedorTelefonoInvalido(pedidoId) {
+  const pedido = pedidos.find((p) => p && Number(p.id) === Number(pedidoId));
+  if (!pedido || !pedido.avisoTelefono) {
+    mostrarToast('No hay aviso de teléfono para este pedido.', 'warning');
+    return;
+  }
+  const mensaje = construirMensajeNotificarVendedorTelefono(pedido);
+  const wa = obtenerSoporteWhatsApp();
+  void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat del vendedor.').then((copiado) => {
+    if (copiado) abrirWhatsAppChat(wa);
+  });
+}
+
 function obtenerTelefonosPedido(pedido) {
   if (!pedido) return [];
   if (Array.isArray(pedido.telefonos) && pedido.telefonos.length) {
@@ -1063,6 +1241,50 @@ function htmlTelefonosPedidoParaTarjeta(pedido) {
   if (tels.length === 0) return '';
   // En una sola línea, separados por guión.
   return tels.join(' - ');
+}
+
+function claveTelefonoNotificacion(tel) {
+  let d = String(tel || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('57') && d.length > 10) d = d.slice(2);
+  return d;
+}
+
+function obtenerTelefonosNotificadosEnCamino(pedido) {
+  if (!Array.isArray(pedido?.telefonosNotificadosEnCamino)) return [];
+  return pedido.telefonosNotificadosEnCamino.map(claveTelefonoNotificacion).filter(Boolean);
+}
+
+function registrarTelefonoNotificadoEnCamino(pedido, tel) {
+  const key = claveTelefonoNotificacion(tel);
+  if (!key || !pedido) return;
+  if (!Array.isArray(pedido.telefonosNotificadosEnCamino)) pedido.telefonosNotificadosEnCamino = [];
+  if (!pedido.telefonosNotificadosEnCamino.includes(key)) {
+    pedido.telefonosNotificadosEnCamino.push(key);
+  }
+}
+
+function obtenerTelefonosPendientesNotificacionEnCamino(pedido) {
+  const todos = obtenerTelefonosPedido(pedido);
+  const hechos = new Set(obtenerTelefonosNotificadosEnCamino(pedido));
+  return todos.filter((t) => !hechos.has(claveTelefonoNotificacion(t)));
+}
+
+function tieneNotificacionEnCaminoParcial(pedido) {
+  const todos = obtenerTelefonosPedido(pedido);
+  const pendientes = obtenerTelefonosPendientesNotificacionEnCamino(pedido);
+  return todos.length > 1 && pendientes.length > 0 && pendientes.length < todos.length;
+}
+
+function limpiarNotificacionEnCaminoPedido(pedido) {
+  if (!pedido) return;
+  pedido.notificadoEnCamino = false;
+  pedido.telefonosNotificadosEnCamino = [];
+}
+
+function completarNotificacionEnCaminoPedido(pedido) {
+  if (!pedido) return;
+  pedido.notificadoEnCamino = true;
 }
 
 function seleccionarTelefonoConModal(tels, titulo, onElegir) {
@@ -1587,7 +1809,7 @@ async function procesarPedido() {
 
   const baseNuevo = pedidoNuevoBase();
   if (sesionUsuario) baseNuevo.createdBy = String(sesionUsuario.id);
-  pedidos.push({
+  const nuevoPedido = {
     id: pedidoId,
     nombre: campos.nombre,
     telefono: campos.telefono,
@@ -1599,10 +1821,13 @@ async function procesarPedido() {
     mapUrl: mapUrlFinal,
     coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
     ...baseNuevo
-  });
+  };
+  sincronizarAvisoTelefonoPedido(nuevoPedido);
+  pedidos.push(nuevoPedido);
 
   guardarPedidos();
   renderPedidos();
+  if (nuevoPedido.avisoTelefono) scrollToTopApp();
 
   setTimeout(() => {
     if (!mapa) return;
@@ -1750,7 +1975,7 @@ async function procesarMultiplesPedidos(texto) {
 
     const baseLote = pedidoNuevoBase();
     if (sesionUsuario) baseLote.createdBy = String(sesionUsuario.id);
-    pedidos.push({
+    const nuevoPedido = {
       id: pedidoId,
       nombre: campos.nombre,
       telefono: campos.telefono,
@@ -1762,7 +1987,9 @@ async function procesarMultiplesPedidos(texto) {
       mapUrl: mapUrlFinal,
       coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
       ...baseLote
-    });
+    };
+    sincronizarAvisoTelefonoPedido(nuevoPedido);
+    pedidos.push(nuevoPedido);
 
     agregados++;
   }
@@ -1772,6 +1999,7 @@ async function procesarMultiplesPedidos(texto) {
   if (agregados > 0) {
     guardarPedidos();
     renderPedidos();
+    if (pedidos.some((p) => p && p.avisoTelefono)) scrollToTopApp();
     setTimeout(() => actualizarMarcadores(), 500);
     document.getElementById("textoPedido").value = "";
   }
@@ -2118,6 +2346,7 @@ function renderPedidos() {
     renderPanelLinksMapsPendientes();
     renderListaOrdenEntrega();
     programarActualizacionFabNavegacion();
+    actualizarBannerAvisosTelefono();
     return;
   }
 
@@ -2181,6 +2410,7 @@ function renderPedidos() {
   renderListaOrdenEntrega();
   ajustarMapaConReintentos();
   programarActualizacionFabNavegacion();
+  actualizarBannerAvisosTelefono();
 }
 
 function cambiarVistaPedidos(vista) {
@@ -2334,17 +2564,30 @@ function crearTarjetaPedido(pedido, index) {
   const btnNoEntregadoHtml = pedido.entregado
     ? `<div class="pedido-no-entregado-wrap"><button class="btn-warning" onclick="marcarNoEntregado(${index})" style="width: 100%;"><i class="fa-solid fa-rotate-left"></i> No entregado</button></div>`
     : '';
-  const etapaActual = obtenerEtapaPedidoUI(pedido);
-  const puedeRegresarAPendientes =
-    etapaActual === 'enRuta' || etapaActual === 'enDestino';
-  const btnRegresarPendienteHtml = puedeRegresarAPendientes
-    ? `<button type="button" class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendientes</button>`
+  const btnNotificarClientePorteriaHtml = pedidoPendienteNotificarClientePorteria(pedido)
+    ? `<div class="pedido-no-entregado-wrap"><button class="btn-notify" onclick="notificarClienteEntregaPorteria(${index}, ${pedido.id})" style="width: 100%;"><i class="fa-brands fa-whatsapp"></i> Notificar al cliente (portería)</button></div>`
     : '';
+  const btnNotificarClienteNoEntregadoHtml = pedidoPendienteNotificarClienteNoEntregado(pedido)
+    ? `<div class="pedido-no-entregado-wrap"><button class="btn-notify" onclick="notificarClienteNoEntregado(${index}, ${pedido.id})" style="width: 100%;"><i class="fa-brands fa-whatsapp"></i> Notificar al cliente (no entregado)</button></div>`
+    : '';
+  const etapaActual = obtenerEtapaPedidoUI(pedido);
+  let btnRegresarEtapaHtml = '';
+  if (etapaActual === 'enRuta') {
+    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarPendiente(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a pendientes</button>`;
+  } else if (etapaActual === 'enDestino') {
+    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnRuta(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en ruta</button>`;
+  } else if (etapaActual === 'finalizado') {
+    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnDestino(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en destino</button>`;
+  }
   const btnReactivarCanceladoHtml =
     adminUi && pedido.cancelado
       ? `<button class="btn-success" onclick="reactivarPedidoCancelado(${index})"><i class="fa-solid fa-rotate-left"></i> Reactivar pedido</button>`
       : '';
-  const textoBotonNotificar = pedido.notificadoEnCamino ? 'Volver a notificar' : 'Notificar en camino';
+  const textoBotonNotificar = pedido.notificadoEnCamino
+    ? 'Volver a notificar'
+    : tieneNotificacionEnCaminoParcial(pedido)
+      ? 'Notificar al otro número'
+      : 'Notificar en camino';
   const btnNotificarHtml =
     etapaActual === 'notificar'
       ? `<button class="btn-notify" onclick="notificarEnCamino(${index}, ${pedido.id}, { abrirEnrutarDespues: true })"><i class="fa-solid fa-bullhorn"></i> ${textoBotonNotificar}</button>`
@@ -2421,7 +2664,7 @@ function crearTarjetaPedido(pedido, index) {
       </details>
     </div>` : ''}
     <div class="pedido-actions">
-      ${btnRegresarPendienteHtml ? `<div class="pedido-actions-row">${btnRegresarPendienteHtml}</div>` : ''}
+      ${btnRegresarEtapaHtml ? `<div class="pedido-actions-row">${btnRegresarEtapaHtml}</div>` : ''}
       ${btnNotificarHtml ? `<div class="pedido-actions-row">${btnNotificarHtml}</div>` : ''}
       ${btnNotificarNuevamenteHtml ? `<div class="pedido-actions-row">${btnNotificarNuevamenteHtml}</div>` : ''}
       ${btnEnrutarHtml ? `<div class="pedido-actions-row">${btnEnrutarHtml}</div>` : ''}
@@ -2430,6 +2673,8 @@ function crearTarjetaPedido(pedido, index) {
       ${bloqueAccionesDestinoHtml}
       ${btnReactivarCanceladoHtml ? `<div class="pedido-actions-row">${btnReactivarCanceladoHtml}</div>` : ''}
     </div>
+    ${btnNotificarClientePorteriaHtml}
+    ${btnNotificarClienteNoEntregadoHtml}
     ${btnNoEntregadoHtml}
   `;
 
@@ -2487,14 +2732,24 @@ function renderListaOrdenEntrega() {
         const bPend = document.createElement('button');
         bPend.type = 'button';
         bPend.className = 'orden-btn-a-pendiente';
-        bPend.title = 'Regresar pedido a pendientes';
-        bPend.setAttribute('aria-label', 'Regresar pedido a pendientes');
+        if (pedido.llegoDestino) {
+          bPend.title = 'Regresar pedido a en ruta';
+          bPend.setAttribute('aria-label', 'Regresar pedido a en ruta');
+          bPend.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            marcarRegresarAEnRuta(idxGlobal);
+          });
+        } else {
+          bPend.title = 'Regresar pedido a pendientes';
+          bPend.setAttribute('aria-label', 'Regresar pedido a pendientes');
+          bPend.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            ev.preventDefault();
+            marcarPendiente(idxGlobal);
+          });
+        }
         bPend.innerHTML = '<i class="fa-solid fa-rotate-left" aria-hidden="true"></i>';
-        bPend.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          ev.preventDefault();
-          marcarPendiente(idxGlobal);
-        });
         acciones.appendChild(bPend);
       }
     }
@@ -2974,6 +3229,7 @@ function marcarEnCurso(index) {
 function marcarPendiente(index) {
   const pedido = pedidos[index];
   if (!pedido || pedido.entregado || pedido.cancelado) return;
+  if (!pedido.enCurso || pedido.llegoDestino) return;
 
   const posicionOriginal = Number.isInteger(pedido.posicionPendiente)
     ? pedido.posicionPendiente
@@ -2982,7 +3238,7 @@ function marcarPendiente(index) {
   pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   // Al regresar a pendientes, permitimos volver a notificar al cliente.
-  pedido.notificadoEnCamino = false;
+  limpiarNotificacionEnCaminoPedido(pedido);
 
   if (posicionOriginal !== null) {
     const [movido] = pedidos.splice(index, 1);
@@ -2995,6 +3251,36 @@ function marcarPendiente(index) {
   actualizarMarcadores();
 }
 
+function marcarRegresarAEnRuta(index) {
+  const pedido = pedidos[index];
+  if (!pedido || pedido.entregado || pedido.cancelado || !pedido.enCurso || !pedido.llegoDestino) return;
+  pedido.llegoDestino = false;
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+}
+
+function marcarRegresarAEnDestino(index) {
+  const pedido = pedidos[index];
+  if (!pedido || !pedido.entregado || pedido.cancelado) return;
+  pedido.entregado = false;
+  pedido.noEntregado = false;
+  pedido.envioRecogido = false;
+  pedido.enCurso = true;
+  pedido.llegoDestino = true;
+  pedido.metodoPagoEntrega = '';
+  pedido.montoNequi = 0;
+  pedido.montoDaviplata = 0;
+  pedido.montoEfectivo = 0;
+  limpiarEntregaPorteriaEnPedido(pedido);
+  vistaPedidosSeleccionadaManual = true;
+  vistaPedidosActual = 'enCurso';
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+  mostrarToast(`Pedido #${pedido.id} regresó a en destino.`, 'info');
+}
+
 function marcarNoEntregado(index) {
   const pedido = pedidos[index];
   if (!pedido) return;
@@ -3005,6 +3291,8 @@ function marcarNoEntregado(index) {
   pedido.noEntregado = false;
   pedido.envioRecogido = false;
   pedido.cancelado = false;
+  limpiarEntregaPorteriaEnPedido(pedido);
+  limpiarNotificacionNoEntregadoEnPedido(pedido);
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -3169,6 +3457,7 @@ function guardarEdicionPedido() {
   }
 
   normalizarPedidoEnMemoria(pedido);
+  sincronizarAvisoTelefonoPedido(pedido);
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -3697,6 +3986,11 @@ let pagoEntregadoPendiente = {
   recibidoPor: ''
 };
 
+/** Evita repetir el modal automático de portería al cliente en el mismo regreso. */
+const porteriaClienteModalOfrecido = new Set();
+/** Evita repetir el modal automático de no entregado al cliente en el mismo regreso. */
+const noEntregadoClienteModalOfrecido = new Set();
+
 function parseMontoEntero(valor) {
   const limpio = String(valor || '').replace(/[^\d]/g, '');
   return limpio ? parseInt(limpio, 10) : 0;
@@ -3852,6 +4146,249 @@ function cerrarModalPagoEntregado() {
   if (inputEfectivo) inputEfectivo.value = '';
 }
 
+function textoMetodoPagoEntregaPedido(pedido) {
+  const metodo = pedido?.metodoPagoEntrega || '';
+  if (metodo === 'nequi') return 'Nequi';
+  if (metodo === 'efectivo') return 'Efectivo';
+  if (metodo === 'daviplata') return 'Daviplata';
+  if (metodo === 'nequi_efectivo') {
+    return `Nequi + Efectivo (Nequi: $${Number(pedido.montoNequi || 0).toLocaleString('es-CO')}, Efectivo: $${Number(pedido.montoEfectivo || 0).toLocaleString('es-CO')})`;
+  }
+  if (metodo === 'daviplata_efectivo') {
+    return `Daviplata + Efectivo (Daviplata: $${Number(pedido.montoDaviplata || 0).toLocaleString('es-CO')}, Efectivo: $${Number(pedido.montoEfectivo || 0).toLocaleString('es-CO')})`;
+  }
+  if (metodo === 'pagado_tienda') return 'Ya se pagó a la tienda';
+  if (metodo === 'es_cambio') return 'Es un cambio';
+  return 'No especificado';
+}
+
+function construirMensajeEntregaRegistrada(pedido) {
+  if (!pedido) return '';
+  if (pedido.mensajeEntregaPorteria) return String(pedido.mensajeEntregaPorteria);
+  const pedidoId = pedido.id != null ? pedido.id : 'N/A';
+  const montoRecibido =
+    Number(pedido.montoNequi || 0) + Number(pedido.montoDaviplata || 0) + Number(pedido.montoEfectivo || 0);
+  const productosEntregados = textoProductosEntregaParaSoporte(pedido);
+  const metodoPagoTexto = textoMetodoPagoEntregaPedido(pedido);
+  const metodo = pedido.metodoPagoEntrega || '';
+  const detalleMonto =
+    metodo === 'pagado_tienda'
+      ? 'No aplica (ya se pagó a la tienda)'
+      : metodo === 'es_cambio'
+        ? 'No aplica (es un cambio)'
+        : `$${montoRecibido.toLocaleString('es-CO')}`;
+  const recibidoPor = String(pedido.porteriaRecibidoPor || '').trim();
+  const detalleEntrega =
+    pedido.lugarEntregaFinal === 'porteria' && recibidoPor
+      ? `Entregado en portería. Recibe: ${recibidoPor}`
+      : '';
+  return `Pedido #${pedidoId} entregado${detalleEntrega ? `\n${detalleEntrega}` : ''}
+Monto recibido: ${detalleMonto}
+Producto(s) entregado(s):
+${productosEntregados}
+Método de pago: ${metodoPagoTexto}`;
+}
+
+function pedidoPendienteNotificarClientePorteria(pedido) {
+  return !!(
+    pedido &&
+    pedido.entregado &&
+    pedido.lugarEntregaFinal === 'porteria' &&
+    pedido.pendienteNotificarClientePorteria
+  );
+}
+
+function guardarEntregaPorteriaEnPedido(pedido, mensaje, recibidoPor) {
+  if (!pedido) return;
+  pedido.lugarEntregaFinal = 'porteria';
+  pedido.porteriaRecibidoPor = String(recibidoPor || '').trim();
+  pedido.mensajeEntregaPorteria = String(mensaje || '');
+  pedido.pendienteNotificarClientePorteria = true;
+  pedido.clienteNotificadoPorteria = false;
+}
+
+function limpiarEntregaPorteriaEnPedido(pedido) {
+  if (!pedido) return;
+  pedido.lugarEntregaFinal = 'cliente';
+  pedido.porteriaRecibidoPor = '';
+  pedido.mensajeEntregaPorteria = '';
+  pedido.pendienteNotificarClientePorteria = false;
+  pedido.clienteNotificadoPorteria = false;
+}
+
+function notificarClienteEntregaPorteria(index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal || !pedidoPendienteNotificarClientePorteria(pedidoFinal)) {
+    mostrarToast('No hay mensaje de portería pendiente para este pedido.', 'warning');
+    return;
+  }
+  const mensaje = construirMensajeEntregaRegistrada(pedidoFinal);
+  const tels = obtenerTelefonosPedido(pedidoFinal);
+  if (!tels.length) {
+    mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación');
+    return;
+  }
+  seleccionarTelefonoConModal(tels, 'Notificar al cliente', (telElegido) => {
+    abrirWhatsAppConTexto(telElegido, mensaje);
+    pedidoFinal.pendienteNotificarClientePorteria = false;
+    pedidoFinal.clienteNotificadoPorteria = true;
+    porteriaClienteModalOfrecido.add(Number(pedidoFinal.id));
+    guardarPedidos();
+    renderPedidos();
+    mostrarToast('Mensaje enviado al cliente por WhatsApp.', 'success');
+  });
+}
+
+function ofrecerNotificarClientePorteriaSiPendiente() {
+  const pendiente = pedidos.find((p) => pedidoPendienteNotificarClientePorteria(p));
+  if (!pendiente) return;
+  const id = Number(pendiente.id);
+  if (porteriaClienteModalOfrecido.has(id)) return;
+  if (hayModalBloqueandoNotificacionCliente()) return;
+
+  porteriaClienteModalOfrecido.add(id);
+  const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
+  mostrarModalDecision({
+    titulo: 'Notificar al cliente',
+    texto: `El pedido #${pendiente.id} quedó en portería.\n¿Quieres enviarle al cliente el mismo mensaje de la entrega?`,
+    textoConfirmar: 'Sí, notificar al cliente',
+    claseConfirmar: 'btn-notify',
+    textoSecundario: 'Ahora no',
+    claseSecundario: 'btn-info',
+    mostrarCancelar: false,
+    onConfirmar: () => notificarClienteEntregaPorteria(indexFinal >= 0 ? indexFinal : 0, pendiente.id),
+    onSecundario: () => {},
+    onCancelar: () => {}
+  });
+}
+
+function despedidaPorHoraDispositivo() {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'que tenga buen día';
+  if (h >= 12 && h < 19) return 'que tenga buena tarde';
+  return 'que tenga buena noche';
+}
+
+function pieMensajeClienteTienda() {
+  return `Cualquier duda o inquietud, por favor comunicarse con la tienda, ${despedidaPorHoraDispositivo()}.`;
+}
+
+function construirMensajeNoEntregadoTienda(pedido, pedidoId, enUbicacion, motivo) {
+  const productos = textoProductosEntregaParaSoporte(pedido);
+  const ubicacionTxt = enUbicacion
+    ? 'Estuve en el punto de entrega'
+    : 'No fui al punto de entrega';
+  const motivoTxt = String(motivo || '').trim();
+  return `Pedido #${pedidoId} no entregado
+Ubicación: ${ubicacionTxt}
+Motivo: ${motivoTxt}
+Producto(s):
+${productos}`;
+}
+
+function construirMensajeNoEntregadoCliente(pedido) {
+  const base = String(pedido?.mensajeNoEntregadoTienda || '').trim();
+  if (!base) return pieMensajeClienteTienda();
+  return `${base}\n\n${pieMensajeClienteTienda()}`;
+}
+
+function pedidoPendienteNotificarClienteNoEntregado(pedido) {
+  return !!(
+    pedido &&
+    pedido.entregado &&
+    pedido.noEntregado &&
+    pedido.pendienteNotificarClienteNoEntregado
+  );
+}
+
+function guardarNoEntregadoNotificacionEnPedido(pedido, mensajeTienda, motivo, enUbicacion) {
+  if (!pedido) return;
+  pedido.motivoNoEntregado = String(motivo || '').trim();
+  pedido.mensajeNoEntregadoTienda = String(mensajeTienda || '');
+  pedido.pendienteNotificarClienteNoEntregado = true;
+  pedido.clienteNotificadoNoEntregado = false;
+  pedido.envioRecogido = !!enUbicacion;
+}
+
+function limpiarNotificacionNoEntregadoEnPedido(pedido) {
+  if (!pedido) return;
+  pedido.motivoNoEntregado = '';
+  pedido.mensajeNoEntregadoTienda = '';
+  pedido.pendienteNotificarClienteNoEntregado = false;
+  pedido.clienteNotificadoNoEntregado = false;
+}
+
+function hayModalBloqueandoNotificacionCliente() {
+  const ids = ['modalDecision', 'modalPagoEntregado', 'modalNoEntregado'];
+  return ids.some((id) => {
+    const el = document.getElementById(id);
+    return el && el.style.display === 'flex';
+  });
+}
+
+function notificarClienteNoEntregado(index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal || !pedidoPendienteNotificarClienteNoEntregado(pedidoFinal)) {
+    mostrarToast('No hay mensaje de no entregado pendiente para este pedido.', 'warning');
+    return;
+  }
+  const mensaje = construirMensajeNoEntregadoCliente(pedidoFinal);
+  const tels = obtenerTelefonosPedido(pedidoFinal);
+  if (!tels.length) {
+    mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación');
+    return;
+  }
+  seleccionarTelefonoConModal(tels, 'Notificar al cliente', (telElegido) => {
+    abrirWhatsAppConTexto(telElegido, mensaje);
+    pedidoFinal.pendienteNotificarClienteNoEntregado = false;
+    pedidoFinal.clienteNotificadoNoEntregado = true;
+    noEntregadoClienteModalOfrecido.add(Number(pedidoFinal.id));
+    guardarPedidos();
+    renderPedidos();
+    mostrarToast('Mensaje enviado al cliente por WhatsApp.', 'success');
+  });
+}
+
+function ofrecerNotificarClienteNoEntregadoSiPendiente() {
+  const pendiente = pedidos.find((p) => pedidoPendienteNotificarClienteNoEntregado(p));
+  if (!pendiente) return;
+  const id = Number(pendiente.id);
+  if (noEntregadoClienteModalOfrecido.has(id)) return;
+  if (hayModalBloqueandoNotificacionCliente()) return;
+
+  noEntregadoClienteModalOfrecido.add(id);
+  const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
+  mostrarModalDecision({
+    titulo: 'Notificar al cliente',
+    texto: `El pedido #${pendiente.id} no fue entregado.\n¿Quieres enviarle al cliente el mensaje con el motivo?`,
+    textoConfirmar: 'Sí, notificar al cliente',
+    claseConfirmar: 'btn-notify',
+    textoSecundario: 'Ahora no',
+    claseSecundario: 'btn-info',
+    mostrarCancelar: false,
+    onConfirmar: () => notificarClienteNoEntregado(indexFinal >= 0 ? indexFinal : 0, pendiente.id),
+    onSecundario: () => {},
+    onCancelar: () => {}
+  });
+}
+
+function configurarRetornoNotificarClientePorteria() {
+  if (configurarRetornoNotificarClientePorteria._listo) return;
+  configurarRetornoNotificarClientePorteria._listo = true;
+  const revisar = () => {
+    if (document.visibilityState && document.visibilityState !== 'visible') return;
+    ofrecerNotificarClientePorteriaSiPendiente();
+    ofrecerNotificarClienteNoEntregadoSiPendiente();
+  };
+  document.addEventListener('visibilitychange', revisar);
+  window.addEventListener('focus', revisar);
+  window.addEventListener('pageshow', revisar);
+}
+
 function fotoEntregado(index, pedidoId) {
   pagoEntregadoPendiente = {
     index,
@@ -3879,32 +4416,24 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   pedido.montoEfectivo = Number(datosPago.montoEfectivo || 0);
 
   const numeroAdmin = obtenerSoporteWhatsApp();
-  const montoRecibido = Number(pedido.montoNequi || 0) + Number(pedido.montoDaviplata || 0) + Number(pedido.montoEfectivo || 0);
-  const productosEntregados = textoProductosEntregaParaSoporte(pedido);
-
-  let metodoPagoTexto = 'No especificado';
-  if (pedido.metodoPagoEntrega === 'nequi') metodoPagoTexto = 'Nequi';
-  else if (pedido.metodoPagoEntrega === 'efectivo') metodoPagoTexto = 'Efectivo';
-  else if (pedido.metodoPagoEntrega === 'daviplata') metodoPagoTexto = 'Daviplata';
-  else if (pedido.metodoPagoEntrega === 'nequi_efectivo') metodoPagoTexto = `Nequi + Efectivo (Nequi: $${pedido.montoNequi.toLocaleString('es-CO')}, Efectivo: $${pedido.montoEfectivo.toLocaleString('es-CO')})`;
-  else if (pedido.metodoPagoEntrega === 'daviplata_efectivo') metodoPagoTexto = `Daviplata + Efectivo (Daviplata: $${pedido.montoDaviplata.toLocaleString('es-CO')}, Efectivo: $${pedido.montoEfectivo.toLocaleString('es-CO')})`;
-  else if (pedido.metodoPagoEntrega === 'pagado_tienda') metodoPagoTexto = 'Ya se pagó a la tienda';
-  else if (pedido.metodoPagoEntrega === 'es_cambio') metodoPagoTexto = 'Es un cambio';
-
-  const detalleMonto = (pedido.metodoPagoEntrega === 'pagado_tienda' || pedido.metodoPagoEntrega === 'es_cambio')
-    ? (pedido.metodoPagoEntrega === 'pagado_tienda' ? 'No aplica (ya se pagó a la tienda)' : 'No aplica (es un cambio)')
-    : `$${montoRecibido.toLocaleString('es-CO')}`;
-  const detalleEntrega =
+  const esPorteria =
     pagoEntregadoPendiente &&
     pagoEntregadoPendiente.lugarEntrega === 'porteria' &&
-    String(pagoEntregadoPendiente.recibidoPor || '').trim() !== ''
-      ? `Entregado en portería. Recibe: ${String(pagoEntregadoPendiente.recibidoPor || '').trim()}`
-      : '';
-  const mensaje = `Pedido #${pedidoId} entregado${detalleEntrega ? `\n${detalleEntrega}` : ''}
-Monto recibido: ${detalleMonto}
-Producto(s) entregado(s):
-${productosEntregados}
-Método de pago: ${metodoPagoTexto}`;
+    String(pagoEntregadoPendiente.recibidoPor || '').trim() !== '';
+  if (esPorteria) {
+    const recibidoPor = String(pagoEntregadoPendiente.recibidoPor || '').trim();
+    const mensaje = construirMensajeEntregaRegistrada({
+      ...pedido,
+      lugarEntregaFinal: 'porteria',
+      porteriaRecibidoPor: recibidoPor,
+    });
+    guardarEntregaPorteriaEnPedido(pedido, mensaje, recibidoPor);
+    porteriaClienteModalOfrecido.delete(Number(pedidoId));
+  } else {
+    limpiarEntregaPorteriaEnPedido(pedido);
+  }
+
+  const mensaje = construirMensajeEntregaRegistrada(pedido);
   if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
     void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.').then((copiado) => {
       if (copiado) abrirWhatsAppChat(numeroAdmin);
@@ -3993,24 +4522,45 @@ function confirmarMontosMixtosPago() {
   registrarEntregaConPago(index, pedidoId, datosPago);
 }
 
-let noEntregadoPendiente = { index: null, pedidoId: null };
+let noEntregadoPendiente = { index: null, pedidoId: null, enUbicacion: null };
+
+function mostrarPasoModalNoEntregado(paso) {
+  const contUbicacion = document.getElementById('pasoNoEntregadoUbicacion');
+  const contMotivo = document.getElementById('pasoNoEntregadoMotivo');
+  if (contUbicacion) contUbicacion.style.display = paso === 'ubicacion' ? 'block' : 'none';
+  if (contMotivo) contMotivo.style.display = paso === 'motivo' ? 'block' : 'none';
+}
 
 function asegurarModalNoEntregado() {
   let modal = document.getElementById('modalNoEntregado');
-  if (modal) return modal;
+  if (modal && document.getElementById('pasoNoEntregadoMotivo')) return modal;
+  if (modal) modal.remove();
 
   modal = document.createElement('div');
   modal.id = 'modalNoEntregado';
   modal.className = 'modal-no-entregado-backdrop';
   modal.innerHTML = `
-    <div class="modal-no-entregado-card">
+    <div class="modal-no-entregado-card modal-no-entregado-card--con-cerrar-x">
+      <button type="button" class="modal-no-entregado-close-x" onclick="cerrarModalNoEntregado()" aria-label="Cerrar">
+        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+      </button>
       <h3>No entregado</h3>
-      <p>Indica si estuviste en el punto de entrega (afecta el pago de $12.000 al delivery):</p>
-      <div class="modal-no-entregado-actions">
-        <button class="btn-warning" onclick="confirmarNoEntregado(true)">Estoy en el punto de entrega</button>
-        <button class="btn-info" onclick="confirmarNoEntregado(false)">No fui al punto de entrega</button>
+      <div id="pasoNoEntregadoUbicacion" style="display:block;">
+        <p>Indica si estuviste en el punto de entrega (afecta el pago de $12.000 al delivery):</p>
+        <div class="modal-no-entregado-actions">
+          <button class="btn-warning" onclick="confirmarNoEntregado(true)">Estoy en el punto de entrega</button>
+          <button class="btn-info" onclick="confirmarNoEntregado(false)">No fui al punto de entrega</button>
+        </div>
       </div>
-      <button class="modal-no-entregado-close" onclick="cerrarModalNoEntregado()">Cerrar</button>
+      <div id="pasoNoEntregadoMotivo" style="display:none;">
+        <p id="noEntregadoUbicacionResumen" class="config-notificacion-ayuda"></p>
+        <label for="noEntregadoMotivo" class="qr-pedidos-label">Motivo por el que no se entregó</label>
+        <textarea id="noEntregadoMotivo" class="qr-pedidos-textarea" rows="4" spellcheck="true" placeholder="Ej: El cliente no respondió, no había quien recibiera, dirección incorrecta…"></textarea>
+        <div class="modal-no-entregado-actions">
+          <button class="btn-primary" onclick="confirmarMotivoNoEntregado()">Enviar a la tienda</button>
+          <button class="btn-warning" onclick="mostrarPasoModalNoEntregado('ubicacion')">Atrás</button>
+        </div>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
@@ -4018,8 +4568,11 @@ function asegurarModalNoEntregado() {
 }
 
 function mostrarOpcionesNoEntregado(index, pedidoId) {
-  noEntregadoPendiente = { index, pedidoId };
+  noEntregadoPendiente = { index, pedidoId, enUbicacion: null };
   const modal = asegurarModalNoEntregado();
+  mostrarPasoModalNoEntregado('ubicacion');
+  const ta = document.getElementById('noEntregadoMotivo');
+  if (ta) ta.value = '';
   modal.style.display = 'flex';
 }
 
@@ -4027,34 +4580,63 @@ function cerrarModalNoEntregado() {
   const modal = document.getElementById('modalNoEntregado');
   if (!modal) return;
   modal.style.display = 'none';
+  mostrarPasoModalNoEntregado('ubicacion');
+  noEntregadoPendiente = { index: null, pedidoId: null, enUbicacion: null };
 }
 
 function confirmarNoEntregado(enUbicacion) {
-  const { index, pedidoId } = noEntregadoPendiente;
+  noEntregadoPendiente.enUbicacion = !!enUbicacion;
+  const resumen = document.getElementById('noEntregadoUbicacionResumen');
+  if (resumen) {
+    resumen.textContent = enUbicacion
+      ? 'Indicaste que estuviste en el punto de entrega.'
+      : 'Indicaste que no fuiste al punto de entrega.';
+  }
+  mostrarPasoModalNoEntregado('motivo');
+  const ta = document.getElementById('noEntregadoMotivo');
+  if (ta) {
+    ta.value = '';
+    ta.focus();
+  }
+}
+
+function confirmarMotivoNoEntregado() {
+  const { index, pedidoId, enUbicacion } = noEntregadoPendiente;
+  const ta = document.getElementById('noEntregadoMotivo');
+  const motivo = ta ? String(ta.value || '').trim() : '';
+  if (!motivo) {
+    mostrarToast('Escribe el motivo por el que no se entregó el pedido.', 'warning');
+    if (ta) ta.focus();
+    return;
+  }
   cerrarModalNoEntregado();
-  procesarFotoNoEntregado(index, pedidoId, enUbicacion);
+  procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo);
 }
 
 function fotoNoEntregado(index, pedidoId) {
   mostrarOpcionesNoEntregado(index, pedidoId);
 }
 
-function procesarFotoNoEntregado(index, pedidoId, enUbicacion) {
+function procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo) {
   const indexActual = pedidos.findIndex(p => p.id === pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedido = pedidos[indexFinal];
   if (!pedido) return;
 
+  const mensajeTienda = construirMensajeNoEntregadoTienda(pedido, pedidoId, enUbicacion, motivo);
+  guardarNoEntregadoNotificacionEnPedido(pedido, mensajeTienda, motivo, enUbicacion);
+  noEntregadoClienteModalOfrecido.delete(Number(pedidoId));
+
   const numeroAdmin = obtenerSoporteWhatsApp();
-  const mensaje = `Pedido #${pedidoId} no entregado`;
-  abrirWhatsAppConTexto(numeroAdmin, mensaje);
+  void copiarTextoAlPortapapeles(mensajeTienda, 'Mensaje copiado. Pégalo en el chat de la tienda.').then((copiado) => {
+    if (copiado) abrirWhatsAppChat(numeroAdmin);
+  });
 
   pedido.entregado = true;
   pedido.enCurso = false;
   pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   pedido.noEntregado = true;
-  pedido.envioRecogido = enUbicacion;
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
@@ -4341,6 +4923,108 @@ function finalizarEntregaConResultado(tipoFinalizacion) {
 
 // --- Notificar en camino ---
 
+function abrirWhatsAppNotificarEnCamino(tel, mensaje) {
+  const limpio = String(tel || '').replace(/\D/g, '');
+  if (!limpio) return;
+  const wa = limpio.startsWith('57') ? limpio : `57${limpio}`;
+  abrirWhatsAppConTexto(wa, mensaje);
+}
+
+function mostrarModalEnrutarTrasNotificacion(indexFinal, pedidoId, opciones) {
+  if (!opciones.abrirEnrutarDespues) return;
+  mostrarModalDecision({
+    titulo: 'Enrutar ahora',
+    texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
+    textoConfirmar: 'Enrutar',
+    claseConfirmar: 'btn-route',
+    mostrarSecundario: false,
+    textoCancelar: 'Cerrar',
+    onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
+    onCancelar: () => {}
+  });
+}
+
+function finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones) {
+  completarNotificacionEnCaminoPedido(pedidoFinal);
+  guardarPedidos();
+  renderPedidos();
+  if (typeof opciones.onSuccess === 'function') opciones.onSuccess();
+  mostrarModalEnrutarTrasNotificacion(indexFinal, pedidoId, opciones);
+}
+
+function ofrecerNotificarSegundoTelefono(indexFinal, pedidoId, pedidoFinal, opciones, mensaje) {
+  const pendientes = obtenerTelefonosPendientesNotificacionEnCamino(pedidoFinal);
+  if (!pendientes.length) {
+    finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones);
+    return;
+  }
+  const otro = pendientes[0];
+  mostrarModalDecision({
+    titulo: 'Notificar al segundo número',
+    texto: `Ya notificaste un número del pedido #${pedidoId}.\n¿Quieres notificar también al ${otro}?`,
+    textoConfirmar: 'Sí, notificar',
+    claseConfirmar: 'btn-notify',
+    textoSecundario: 'No, continuar',
+    claseSecundario: 'btn-info',
+    mostrarCancelar: false,
+    onConfirmar: () => {
+      abrirWhatsAppNotificarEnCamino(otro, mensaje);
+      registrarTelefonoNotificadoEnCamino(pedidoFinal, otro);
+      guardarPedidos();
+      renderPedidos();
+      finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones);
+    },
+    onSecundario: () => finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones),
+    onCancelar: () => {}
+  });
+}
+
+function continuarFlujoNotificacionEnCaminoTrasUno(indexFinal, pedidoId, pedidoFinal, opciones, mensaje) {
+  const todos = obtenerTelefonosPedido(pedidoFinal);
+  if (todos.length > 1 && obtenerTelefonosPendientesNotificacionEnCamino(pedidoFinal).length > 0) {
+    ofrecerNotificarSegundoTelefono(indexFinal, pedidoId, pedidoFinal, opciones, mensaje);
+    return;
+  }
+  finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones);
+}
+
+function ejecutarNotificacionEnCaminoParcial(indexFinal, pedidoId, pedidoFinal, opciones, mensaje) {
+  const pendientes = obtenerTelefonosPendientesNotificacionEnCamino(pedidoFinal);
+  if (!pendientes.length) {
+    finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones);
+    return;
+  }
+  if (pendientes.length === 1) {
+    const otro = pendientes[0];
+    mostrarModalDecision({
+      titulo: 'Notificar al segundo número',
+      texto: `Falta notificar al ${otro} del pedido #${pedidoId}.\n¿Quieres notificar ahora?`,
+      textoConfirmar: 'Sí, notificar',
+      claseConfirmar: 'btn-notify',
+      textoSecundario: 'No, continuar',
+      claseSecundario: 'btn-info',
+      mostrarCancelar: false,
+      onConfirmar: () => {
+        abrirWhatsAppNotificarEnCamino(otro, mensaje);
+        registrarTelefonoNotificadoEnCamino(pedidoFinal, otro);
+        guardarPedidos();
+        renderPedidos();
+        finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones);
+      },
+      onSecundario: () => finalizarFlujoNotificacionEnCamino(indexFinal, pedidoId, pedidoFinal, opciones),
+      onCancelar: () => {}
+    });
+    return;
+  }
+  seleccionarTelefonoConModal(pendientes, 'Notificación', (telElegido) => {
+    abrirWhatsAppNotificarEnCamino(telElegido, mensaje);
+    registrarTelefonoNotificadoEnCamino(pedidoFinal, telElegido);
+    guardarPedidos();
+    renderPedidos();
+    continuarFlujoNotificacionEnCaminoTrasUno(indexFinal, pedidoId, pedidoFinal, opciones, mensaje);
+  });
+}
+
 function minutosDelDiaRelojLocal() {
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
@@ -4385,6 +5069,11 @@ async function notificarEnCamino(index, pedidoId, opciones = {}) {
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedidoFinal = pedido || pedidos[indexFinal];
   if (!pedidoFinal) return;
+
+  if (opciones.forzarReenvio) {
+    limpiarNotificacionEnCaminoPedido(pedidoFinal);
+  }
+
   if (pedidoFinal.notificadoEnCamino && !opciones.forzarReenvio) {
     mostrarModalDecision({
       titulo: 'Pedido ya notificado',
@@ -4398,6 +5087,7 @@ async function notificarEnCamino(index, pedidoId, opciones = {}) {
     });
     return;
   }
+
   const tels = obtenerTelefonosPedido(pedidoFinal);
   if (!tels.length) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
 
@@ -4412,76 +5102,17 @@ async function notificarEnCamino(index, pedidoId, opciones = {}) {
   const bloquePago = construirBloquePagoNotificacion();
   const mensaje = construirMensajeNotificarEnCamino(nombre, precio, bloquePago);
 
-  const notificarA = (tel) => {
-    const limpio = String(tel || '').replace(/\D/g, '');
-    if (!limpio) return;
-    const wa = limpio.startsWith('57') ? limpio : `57${limpio}`;
-    abrirWhatsAppConTexto(wa, mensaje);
-  };
+  if (tieneNotificacionEnCaminoParcial(pedidoFinal)) {
+    ejecutarNotificacionEnCaminoParcial(indexFinal, pedidoId, pedidoFinal, opciones, mensaje);
+    return;
+  }
 
-  seleccionarTelefonoConModal(tels, 'Notificación', (telElegido, idxElegido, lista) => {
-    notificarA(telElegido);
-
-    // Marcar como notificado solo después de elegir/enviar.
-    pedidoFinal.notificadoEnCamino = true;
+  seleccionarTelefonoConModal(tels, 'Notificación', (telElegido) => {
+    abrirWhatsAppNotificarEnCamino(telElegido, mensaje);
+    registrarTelefonoNotificadoEnCamino(pedidoFinal, telElegido);
     guardarPedidos();
     renderPedidos();
-    if (typeof opciones.onSuccess === 'function') opciones.onSuccess();
-    if (opciones.abrirEnrutarDespues) {
-      mostrarModalDecision({
-        titulo: 'Enrutar ahora',
-        texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
-        textoConfirmar: 'Enrutar',
-        claseConfirmar: 'btn-route',
-        mostrarSecundario: false,
-        textoCancelar: 'Cerrar',
-        onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
-        onCancelar: () => {}
-      });
-    }
-
-    const otro = Array.isArray(lista) ? lista.find((t, i) => i !== idxElegido) : null;
-    if (otro) {
-      mostrarModalDecision({
-        titulo: 'Notificar al otro número',
-        texto: '¿Quieres notificar también al otro número?',
-        textoConfirmar: 'Sí, notificar',
-        claseConfirmar: 'btn-notify',
-        textoSecundario: 'No',
-        claseSecundario: 'btn-info',
-        mostrarCancelar: false,
-        onConfirmar: () => {
-          notificarA(otro);
-          if (opciones.abrirEnrutarDespues) {
-            mostrarModalDecision({
-              titulo: 'Enrutar ahora',
-              texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
-              textoConfirmar: 'Enrutar',
-              claseConfirmar: 'btn-route',
-              mostrarSecundario: false,
-              textoCancelar: 'Cerrar',
-              onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
-              onCancelar: () => {}
-            });
-          }
-        },
-        onSecundario: () => {
-          if (opciones.abrirEnrutarDespues) {
-            mostrarModalDecision({
-              titulo: 'Enrutar ahora',
-              texto: `Pedido #${pedidoId} notificado.\n¿Quieres enrutar ahora?`,
-              textoConfirmar: 'Enrutar',
-              claseConfirmar: 'btn-route',
-              mostrarSecundario: false,
-              textoCancelar: 'Cerrar',
-              onConfirmar: () => enrutarConApps(indexFinal, pedidoId),
-              onCancelar: () => {}
-            });
-          }
-        },
-        onCancelar: () => {}
-      });
-    }
+    continuarFlujoNotificacionEnCaminoTrasUno(indexFinal, pedidoId, pedidoFinal, opciones, mensaje);
   });
 }
 
@@ -4986,6 +5617,15 @@ function normalizarPedidoEnMemoria(p) {
   if (!p.hasOwnProperty('montoNequi')) p.montoNequi = 0;
   if (!p.hasOwnProperty('montoDaviplata')) p.montoDaviplata = 0;
   if (!p.hasOwnProperty('montoEfectivo')) p.montoEfectivo = 0;
+  if (!p.hasOwnProperty('lugarEntregaFinal')) p.lugarEntregaFinal = 'cliente';
+  if (!p.hasOwnProperty('porteriaRecibidoPor')) p.porteriaRecibidoPor = '';
+  if (!p.hasOwnProperty('mensajeEntregaPorteria')) p.mensajeEntregaPorteria = '';
+  if (!p.hasOwnProperty('pendienteNotificarClientePorteria')) p.pendienteNotificarClientePorteria = false;
+  if (!p.hasOwnProperty('clienteNotificadoPorteria')) p.clienteNotificadoPorteria = false;
+  if (!p.hasOwnProperty('motivoNoEntregado')) p.motivoNoEntregado = '';
+  if (!p.hasOwnProperty('mensajeNoEntregadoTienda')) p.mensajeNoEntregadoTienda = '';
+  if (!p.hasOwnProperty('pendienteNotificarClienteNoEntregado')) p.pendienteNotificarClienteNoEntregado = false;
+  if (!p.hasOwnProperty('clienteNotificadoNoEntregado')) p.clienteNotificadoNoEntregado = false;
   if (!p.hasOwnProperty('telefonos')) p.telefonos = [];
   if (!Array.isArray(p.telefonos)) p.telefonos = normalizarTelefonosDesdeTexto(String(p.telefonos || ''));
   if (p.telefonos.length === 0 && p.telefono) {
@@ -6616,6 +7256,7 @@ function sincronizarSesionDesdeOtraPestana() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  configurarRetornoNotificarClientePorteria();
   window.addEventListener('storage', (ev) => {
     if (
       ev.key === AUTH_ACTIVE_USER_KEY ||
