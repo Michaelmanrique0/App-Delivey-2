@@ -4189,6 +4189,16 @@ ${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
 }
 
+function pieMensajeClientePorteria() {
+  return 'Cualquier duda o inquietud, comunicarse con las personas que le vendieron.';
+}
+
+function construirMensajeEntregaPorteriaCliente(pedido) {
+  const base = construirMensajeEntregaRegistrada(pedido);
+  if (!base) return pieMensajeClientePorteria();
+  return `${base}\n\n${pieMensajeClientePorteria()}`;
+}
+
 function pedidoPendienteNotificarClientePorteria(pedido) {
   return !!(
     pedido &&
@@ -4224,7 +4234,7 @@ function notificarClienteEntregaPorteria(index, pedidoId) {
     mostrarToast('No hay mensaje de portería pendiente para este pedido.', 'warning');
     return;
   }
-  const mensaje = construirMensajeEntregaRegistrada(pedidoFinal);
+  const mensaje = construirMensajeEntregaPorteriaCliente(pedidoFinal);
   const tels = obtenerTelefonosPedido(pedidoFinal);
   if (!tels.length) {
     mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación');
