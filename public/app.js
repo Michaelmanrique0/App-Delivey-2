@@ -3990,6 +3990,10 @@ let pagoEntregadoPendiente = {
 const porteriaClienteModalOfrecido = new Set();
 /** Evita repetir el modal automático de no entregado al cliente en el mismo regreso. */
 const noEntregadoClienteModalOfrecido = new Set();
+/** Tras portería / no entregado: el siguiente pedido se ofrece solo después de decidir notificar al cliente. */
+let pedidoIdPendienteSiguienteTrasCliente = null;
+/** Tras “Sí, notificar” al cliente: al volver de WhatsApp se ofrece el siguiente pedido. */
+let esperandoRetornoParaSiguientePedido = false;
 
 function parseMontoEntero(valor) {
   const limpio = String(valor || '').replace(/[^\d]/g, '');
@@ -4226,6 +4230,30 @@ function limpiarEntregaPorteriaEnPedido(pedido) {
   pedido.clienteNotificadoPorteria = false;
 }
 
+function continuarConSiguientePedidoTrasCliente() {
+  const excluir = pedidoIdPendienteSiguienteTrasCliente;
+  pedidoIdPendienteSiguienteTrasCliente = null;
+  esperandoRetornoParaSiguientePedido = false;
+  if (excluir == null) return;
+  notificarSiguientePedido(excluir);
+}
+
+function declinarNotificarClientePorteria(pedido) {
+  if (!pedido) return;
+  pedido.pendienteNotificarClientePorteria = false;
+  guardarPedidos();
+  renderPedidos();
+  continuarConSiguientePedidoTrasCliente();
+}
+
+function declinarNotificarClienteNoEntregado(pedido) {
+  if (!pedido) return;
+  pedido.pendienteNotificarClienteNoEntregado = false;
+  guardarPedidos();
+  renderPedidos();
+  continuarConSiguientePedidoTrasCliente();
+}
+
 function notificarClienteEntregaPorteria(index, pedidoId) {
   const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
@@ -4245,6 +4273,7 @@ function notificarClienteEntregaPorteria(index, pedidoId) {
     pedidoFinal.pendienteNotificarClientePorteria = false;
     pedidoFinal.clienteNotificadoPorteria = true;
     porteriaClienteModalOfrecido.add(Number(pedidoFinal.id));
+    esperandoRetornoParaSiguientePedido = true;
     guardarPedidos();
     renderPedidos();
     mostrarToast('Mensaje enviado al cliente por WhatsApp.', 'success');
@@ -4253,25 +4282,29 @@ function notificarClienteEntregaPorteria(index, pedidoId) {
 
 function ofrecerNotificarClientePorteriaSiPendiente() {
   const pendiente = pedidos.find((p) => pedidoPendienteNotificarClientePorteria(p));
-  if (!pendiente) return;
+  if (!pendiente) return false;
   const id = Number(pendiente.id);
-  if (porteriaClienteModalOfrecido.has(id)) return;
-  if (hayModalBloqueandoNotificacionCliente()) return;
+  if (porteriaClienteModalOfrecido.has(id)) return false;
+  if (hayModalBloqueandoNotificacionCliente()) return false;
 
   porteriaClienteModalOfrecido.add(id);
+  if (pedidoIdPendienteSiguienteTrasCliente == null) {
+    pedidoIdPendienteSiguienteTrasCliente = pendiente.id;
+  }
   const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
   mostrarModalDecision({
     titulo: 'Notificar al cliente',
-    texto: `El pedido #${pendiente.id} quedó en portería.\n¿Quieres enviarle al cliente el mismo mensaje de la entrega?`,
-    textoConfirmar: 'Sí, notificar al cliente',
+    texto: `El pedido #${pendiente.id} quedó en portería.\n¿Quieres notificarle al cliente?`,
+    textoConfirmar: 'Sí, notificar',
     claseConfirmar: 'btn-notify',
-    textoSecundario: 'Ahora no',
+    textoSecundario: 'No, notificar',
     claseSecundario: 'btn-info',
     mostrarCancelar: false,
     onConfirmar: () => notificarClienteEntregaPorteria(indexFinal >= 0 ? indexFinal : 0, pendiente.id),
-    onSecundario: () => {},
+    onSecundario: () => declinarNotificarClientePorteria(pendiente),
     onCancelar: () => {}
   });
+  return true;
 }
 
 function despedidaPorHoraDispositivo() {
@@ -4357,6 +4390,7 @@ function notificarClienteNoEntregado(index, pedidoId) {
     pedidoFinal.pendienteNotificarClienteNoEntregado = false;
     pedidoFinal.clienteNotificadoNoEntregado = true;
     noEntregadoClienteModalOfrecido.add(Number(pedidoFinal.id));
+    esperandoRetornoParaSiguientePedido = true;
     guardarPedidos();
     renderPedidos();
     mostrarToast('Mensaje enviado al cliente por WhatsApp.', 'success');
@@ -4365,25 +4399,29 @@ function notificarClienteNoEntregado(index, pedidoId) {
 
 function ofrecerNotificarClienteNoEntregadoSiPendiente() {
   const pendiente = pedidos.find((p) => pedidoPendienteNotificarClienteNoEntregado(p));
-  if (!pendiente) return;
+  if (!pendiente) return false;
   const id = Number(pendiente.id);
-  if (noEntregadoClienteModalOfrecido.has(id)) return;
-  if (hayModalBloqueandoNotificacionCliente()) return;
+  if (noEntregadoClienteModalOfrecido.has(id)) return false;
+  if (hayModalBloqueandoNotificacionCliente()) return false;
 
   noEntregadoClienteModalOfrecido.add(id);
+  if (pedidoIdPendienteSiguienteTrasCliente == null) {
+    pedidoIdPendienteSiguienteTrasCliente = pendiente.id;
+  }
   const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
   mostrarModalDecision({
     titulo: 'Notificar al cliente',
-    texto: `El pedido #${pendiente.id} no fue entregado.\n¿Quieres enviarle al cliente el mensaje con el motivo?`,
-    textoConfirmar: 'Sí, notificar al cliente',
+    texto: `El pedido #${pendiente.id} no fue entregado.\n¿Quieres notificarle al cliente?`,
+    textoConfirmar: 'Sí, notificar',
     claseConfirmar: 'btn-notify',
-    textoSecundario: 'Ahora no',
+    textoSecundario: 'No, notificar',
     claseSecundario: 'btn-info',
     mostrarCancelar: false,
     onConfirmar: () => notificarClienteNoEntregado(indexFinal >= 0 ? indexFinal : 0, pendiente.id),
-    onSecundario: () => {},
+    onSecundario: () => declinarNotificarClienteNoEntregado(pendiente),
     onCancelar: () => {}
   });
+  return true;
 }
 
 function configurarRetornoNotificarClientePorteria() {
@@ -4391,8 +4429,17 @@ function configurarRetornoNotificarClientePorteria() {
   configurarRetornoNotificarClientePorteria._listo = true;
   const revisar = () => {
     if (document.visibilityState && document.visibilityState !== 'visible') return;
-    ofrecerNotificarClientePorteriaSiPendiente();
-    ofrecerNotificarClienteNoEntregadoSiPendiente();
+    const ofrecioPorteria = ofrecerNotificarClientePorteriaSiPendiente();
+    const ofrecioNoEntregado = ofrecerNotificarClienteNoEntregadoSiPendiente();
+    if (ofrecioPorteria || ofrecioNoEntregado) return;
+    if (hayModalBloqueandoNotificacionCliente()) return;
+    if (
+      esperandoRetornoParaSiguientePedido &&
+      pedidoIdPendienteSiguienteTrasCliente != null &&
+      !pedidos.some((p) => pedidoPendienteNotificarClientePorteria(p) || pedidoPendienteNotificarClienteNoEntregado(p))
+    ) {
+      continuarConSiguientePedidoTrasCliente();
+    }
   };
   document.addEventListener('visibilitychange', revisar);
   window.addEventListener('focus', revisar);
@@ -4439,6 +4486,8 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
     });
     guardarEntregaPorteriaEnPedido(pedido, mensaje, recibidoPor);
     porteriaClienteModalOfrecido.delete(Number(pedidoId));
+    pedidoIdPendienteSiguienteTrasCliente = pedidoId;
+    esperandoRetornoParaSiguientePedido = false;
   } else {
     limpiarEntregaPorteriaEnPedido(pedido);
   }
@@ -4457,7 +4506,9 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
     recibidoPor: ''
   };
   marcarEntregado(indexFinal);
-  notificarSiguientePedido(pedidoId);
+  if (!esPorteria) {
+    notificarSiguientePedido(pedidoId);
+  }
 }
 
 function seleccionarMetodoPagoEntregado(metodo) {
@@ -4647,10 +4698,11 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo) {
   pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   pedido.noEntregado = true;
+  pedidoIdPendienteSiguienteTrasCliente = pedidoId;
+  esperandoRetornoParaSiguientePedido = false;
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
-  notificarSiguientePedido(pedidoId);
 }
 
 // --- Enrutamiento ---
