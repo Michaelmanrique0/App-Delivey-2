@@ -2979,13 +2979,49 @@ async function aplicarReordenListaOrdenSegunY(listaOrden, clientY, draggedId) {
   return ok;
 }
 
+function restaurarItemTrasArrastreOrden(itemEl, lista) {
+  if (ordenEntregaPlaceholderEl && ordenEntregaPlaceholderEl.parentNode) {
+    ordenEntregaPlaceholderEl.remove();
+  }
+  if (itemEl) {
+    itemEl.classList.remove('dragging');
+    itemEl.style.display = '';
+  }
+  ocultarGhostOrdenEntrega();
+  if (lista) limpiarHintsOrdenEntrega(lista);
+  const panel = lista && lista.closest('.orden-entrega-panel');
+  if (panel) panel.classList.remove('dragging-activo');
+}
+
+function activarArrastreOrdenSiCorresponde(e, snap) {
+  if (snap.activo) return true;
+  const dx = e.clientX - snap.startX;
+  const dy = e.clientY - snap.startY;
+  if (dx * dx + dy * dy < 36) return false;
+
+  snap.activo = true;
+  const { itemEl, lista, pedidoId } = snap;
+  itemEl.classList.add('dragging');
+  actualizarGhostOrdenEntrega(e.clientX, e.clientY, pedidoId);
+  const panel = lista.closest('.orden-entrega-panel');
+  if (panel) panel.classList.add('dragging-activo');
+
+  // Placeholder en la posición original; ocultamos el item para que se vea el hueco.
+  const ph = asegurarPlaceholderOrdenEntrega();
+  if (itemEl.parentNode === lista) lista.insertBefore(ph, itemEl);
+  itemEl.style.display = 'none';
+  return true;
+}
+
 function ordenItemPointerMove(e) {
   if (!ordenEntregaArrastre || e.pointerId !== ordenEntregaArrastre.pointerId) return;
   e.preventDefault();
-  actualizarGhostOrdenEntrega(e.clientX, e.clientY, ordenEntregaArrastre.pedidoId);
+  const snap = ordenEntregaArrastre;
+  if (!activarArrastreOrdenSiCorresponde(e, snap)) return;
+
+  actualizarGhostOrdenEntrega(e.clientX, e.clientY, snap.pedidoId);
 
   // Mostrar hueco donde quedaría al soltar.
-  const snap = ordenEntregaArrastre;
   const { lista } = snap;
   const panel = lista.closest('.orden-entrega-panel');
   const bounds = (panel || lista).getBoundingClientRect();
@@ -3009,28 +3045,24 @@ async function ordenItemPointerEnd(e) {
   const snap = ordenEntregaArrastre;
   ordenEntregaArrastre = null;
 
-  const { itemEl, lista, pedidoId, pointerId, startX, startY } = snap;
+  const { itemEl, lista, pedidoId, pointerId, activo } = snap;
   itemEl.removeEventListener('pointermove', ordenItemPointerMove);
   itemEl.removeEventListener('pointerup', ordenItemPointerEnd);
   itemEl.removeEventListener('pointercancel', ordenItemPointerEnd);
-
-  itemEl.classList.remove('dragging');
-  ocultarGhostOrdenEntrega();
-  limpiarHintsOrdenEntrega(lista);
-  const panel = lista.closest('.orden-entrega-panel');
-  if (panel) panel.classList.remove('dragging-activo');
   try {
     itemEl.releasePointerCapture(pointerId);
   } catch (_err) {}
 
-  const dx = e.clientX - startX;
-  const dy = e.clientY - startY;
-  if (dx * dx + dy * dy < 36) return;
+  // Clic sin arrastre: no ocultamos el ítem (solo se oculta al superar el umbral).
+  if (!activo) {
+    restaurarItemTrasArrastreOrden(itemEl, lista);
+    return;
+  }
 
+  const panel = lista.closest('.orden-entrega-panel');
   const bounds = (panel || lista).getBoundingClientRect();
   if (e.clientX < bounds.left || e.clientX > bounds.right || e.clientY < bounds.top || e.clientY > bounds.bottom) {
-    if (ordenEntregaPlaceholderEl && ordenEntregaPlaceholderEl.parentNode) ordenEntregaPlaceholderEl.remove();
-    itemEl.style.display = '';
+    restaurarItemTrasArrastreOrden(itemEl, lista);
     return;
   }
 
@@ -3041,7 +3073,7 @@ async function ordenItemPointerEnd(e) {
     const after = ph.nextElementSibling;
     if (after && after.classList && after.classList.contains('orden-item')) {
       const beforeId = parseInt(after.dataset.id, 10);
-      if (Number.isFinite(beforeId) && advertirSiAdminReordenaAsignados([pedidoId, beforeId])) {
+      if (Number.isFinite(beforeId) && (await advertirSiAdminReordenaAsignados([pedidoId, beforeId]))) {
         ok = moverPedidoAntesDeId(pedidoId, beforeId);
       }
     } else {
@@ -3049,7 +3081,7 @@ async function ordenItemPointerEnd(e) {
       const last = items[items.length - 1];
       if (last) {
         const afterId = parseInt(last.dataset.id, 10);
-        if (Number.isFinite(afterId) && advertirSiAdminReordenaAsignados([pedidoId, afterId])) {
+        if (Number.isFinite(afterId) && (await advertirSiAdminReordenaAsignados([pedidoId, afterId]))) {
           ok = moverPedidoDespuesDeId(pedidoId, afterId);
         }
       }
@@ -3057,8 +3089,7 @@ async function ordenItemPointerEnd(e) {
   } else {
     ok = await aplicarReordenListaOrdenSegunY(lista, e.clientY, pedidoId);
   }
-  if (ph && ph.parentNode) ph.remove();
-  itemEl.style.display = '';
+  restaurarItemTrasArrastreOrden(itemEl, lista);
   if (ok) {
     guardarPedidos();
     renderPedidos();
@@ -3074,7 +3105,8 @@ function ordenListaPointerDown(e) {
   if (!lista || e.currentTarget !== lista) return;
   const item = e.target.closest && e.target.closest('.orden-item');
   if (!item || !lista.contains(item)) return;
-  if (e.target.closest && e.target.closest('.orden-flecha')) return;
+  // No iniciar arrastre desde botones de la fila (flechas / regresar etapa).
+  if (e.target.closest && e.target.closest('.orden-item-acciones')) return;
   if (e.button !== 0) return;
 
   const pedidoId = parseInt(item.dataset.id, 10);
@@ -3087,20 +3119,12 @@ function ordenListaPointerDown(e) {
     pedidoId,
     pointerId: e.pointerId,
     startX: e.clientX,
-    startY: e.clientY
+    startY: e.clientY,
+    activo: false
   };
-  item.classList.add('dragging');
-  actualizarGhostOrdenEntrega(e.clientX, e.clientY, pedidoId);
-  const panel = lista.closest('.orden-entrega-panel');
-  if (panel) panel.classList.add('dragging-activo');
   try {
     item.setPointerCapture(e.pointerId);
   } catch (_err) {}
-
-  // Placeholder en la posición original del item; escondemos el item para que se vea el hueco.
-  const ph = asegurarPlaceholderOrdenEntrega();
-  if (item.parentNode === lista) lista.insertBefore(ph, item);
-  item.style.display = 'none';
 
   item.addEventListener('pointermove', ordenItemPointerMove);
   item.addEventListener('pointerup', ordenItemPointerEnd);
