@@ -4014,10 +4014,15 @@ let pagoEntregadoPendiente = {
 const porteriaClienteModalOfrecido = new Set();
 /** Evita repetir el modal automático de no entregado al cliente en el mismo regreso. */
 const noEntregadoClienteModalOfrecido = new Set();
-/** Tras portería / no entregado: el siguiente pedido se ofrece solo después de decidir notificar al cliente. */
-let pedidoIdPendienteSiguienteTrasCliente = null;
-/** Tras “Sí, notificar” al cliente: al volver de WhatsApp se ofrece el siguiente pedido. */
-let esperandoRetornoParaSiguientePedido = false;
+/**
+ * Flujo tras portería / no entregado:
+ * 1) preguntar notificar cliente (inmediato)
+ * 2) enviar a tienda
+ * 3) ofrecer siguiente pedido
+ */
+let flujoPostCierrePedido = null;
+/** Solo avanza de fase al volver realmente desde otra app/pestaña. */
+let flujoPostCierreEstabaOculto = false;
 
 function parseMontoEntero(valor) {
   const limpio = String(valor || '').replace(/[^\d]/g, '');
@@ -4254,12 +4259,113 @@ function limpiarEntregaPorteriaEnPedido(pedido) {
   pedido.clienteNotificadoPorteria = false;
 }
 
-function continuarConSiguientePedidoTrasCliente() {
-  const excluir = pedidoIdPendienteSiguienteTrasCliente;
-  pedidoIdPendienteSiguienteTrasCliente = null;
-  esperandoRetornoParaSiguientePedido = false;
+function limpiarFlujoPostCierrePedido() {
+  flujoPostCierrePedido = null;
+}
+
+function iniciarFlujoPostCierrePedido({ pedidoId, tipo, mensajeTienda, enviarWhatsAppAdmin = true }) {
+  flujoPostCierrePedido = {
+    pedidoId,
+    tipo, // 'porteria' | 'no_entregado'
+    mensajeTienda: String(mensajeTienda || ''),
+    enviarWhatsAppAdmin: enviarWhatsAppAdmin !== false,
+    fase: 'preguntar_cliente',
+  };
+  if (tipo === 'porteria') porteriaClienteModalOfrecido.delete(Number(pedidoId));
+  if (tipo === 'no_entregado') noEntregadoClienteModalOfrecido.delete(Number(pedidoId));
+  // Tras cerrar modales de pago/motivo, preguntar al cliente de inmediato.
+  window.setTimeout(() => {
+    ofrecerNotificarClienteTrasCierrePedido();
+  }, 0);
+}
+
+function enviarMensajeTiendaFlujoPostCierre() {
+  const flujo = flujoPostCierrePedido;
+  if (!flujo) return;
+  if (!flujo.enviarWhatsAppAdmin) {
+    flujo.fase = 'listo_siguiente';
+    window.setTimeout(() => continuarConSiguientePedidoTrasCierre(), 0);
+    return;
+  }
+  const numeroAdmin = obtenerSoporteWhatsApp();
+  const mensaje = String(flujo.mensajeTienda || '');
+  flujo.fase = 'esperando_retorno_tienda';
+  void copiarTextoAlPortapapeles(
+    mensaje,
+    'Mensaje copiado. Pégalo en el chat de la tienda.'
+  ).then((copiado) => {
+    if (copiado) abrirWhatsAppChat(numeroAdmin);
+  });
+}
+
+function continuarConSiguientePedidoTrasCierre() {
+  const flujo = flujoPostCierrePedido;
+  const excluir = flujo ? flujo.pedidoId : null;
+  limpiarFlujoPostCierrePedido();
   if (excluir == null) return;
   notificarSiguientePedido(excluir);
+}
+
+function ofrecerNotificarClienteTrasCierrePedido() {
+  const flujo = flujoPostCierrePedido;
+  if (!flujo || flujo.fase !== 'preguntar_cliente') return false;
+  if (hayModalBloqueandoNotificacionCliente()) return false;
+
+  const pedido = pedidos.find((p) => Number(p.id) === Number(flujo.pedidoId));
+  if (!pedido) {
+    limpiarFlujoPostCierrePedido();
+    return false;
+  }
+
+  if (flujo.tipo === 'porteria') {
+    if (!pedidoPendienteNotificarClientePorteria(pedido)) {
+      enviarMensajeTiendaFlujoPostCierre();
+      return false;
+    }
+    const id = Number(pedido.id);
+    const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
+    mostrarModalDecision({
+      titulo: 'Notificar al cliente',
+      texto: `El pedido #${pedido.id} quedó en portería.\n¿Quieres notificarle al cliente?`,
+      textoConfirmar: 'Sí, notificar',
+      claseConfirmar: 'btn-notify',
+      textoSecundario: 'No, notificar',
+      claseSecundario: 'btn-info',
+      mostrarCancelar: false,
+      onConfirmar: () => notificarClienteEntregaPorteria(indexFinal >= 0 ? indexFinal : 0, pedido.id),
+      onSecundario: () => declinarNotificarClientePorteria(pedido),
+      onCancelar: () => {}
+    });
+    return true;
+  }
+
+  if (flujo.tipo === 'no_entregado') {
+    if (!pedidoPendienteNotificarClienteNoEntregado(pedido)) {
+      enviarMensajeTiendaFlujoPostCierre();
+      return false;
+    }
+    const id = Number(pedido.id);
+    const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
+    mostrarModalDecision({
+      titulo: 'Notificar al cliente',
+      texto: `El pedido #${pedido.id} no fue entregado.\n¿Quieres notificarle al cliente?`,
+      textoConfirmar: 'Sí, notificar',
+      claseConfirmar: 'btn-notify',
+      textoSecundario: 'No, notificar',
+      claseSecundario: 'btn-info',
+      mostrarCancelar: false,
+      onConfirmar: () => notificarClienteNoEntregado(indexFinal >= 0 ? indexFinal : 0, pedido.id),
+      onSecundario: () => declinarNotificarClienteNoEntregado(pedido),
+      onCancelar: () => {}
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function continuarConSiguientePedidoTrasCliente() {
+  continuarConSiguientePedidoTrasCierre();
 }
 
 function declinarNotificarClientePorteria(pedido) {
@@ -4267,7 +4373,11 @@ function declinarNotificarClientePorteria(pedido) {
   pedido.pendienteNotificarClientePorteria = false;
   guardarPedidos();
   renderPedidos();
-  continuarConSiguientePedidoTrasCliente();
+  if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedido.id)) {
+    enviarMensajeTiendaFlujoPostCierre();
+    return;
+  }
+  continuarConSiguientePedidoTrasCierre();
 }
 
 function declinarNotificarClienteNoEntregado(pedido) {
@@ -4275,7 +4385,11 @@ function declinarNotificarClienteNoEntregado(pedido) {
   pedido.pendienteNotificarClienteNoEntregado = false;
   guardarPedidos();
   renderPedidos();
-  continuarConSiguientePedidoTrasCliente();
+  if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedido.id)) {
+    enviarMensajeTiendaFlujoPostCierre();
+    return;
+  }
+  continuarConSiguientePedidoTrasCierre();
 }
 
 function notificarClienteEntregaPorteria(index, pedidoId) {
@@ -4297,7 +4411,9 @@ function notificarClienteEntregaPorteria(index, pedidoId) {
     pedidoFinal.pendienteNotificarClientePorteria = false;
     pedidoFinal.clienteNotificadoPorteria = true;
     porteriaClienteModalOfrecido.add(Number(pedidoFinal.id));
-    esperandoRetornoParaSiguientePedido = true;
+    if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedidoFinal.id)) {
+      flujoPostCierrePedido.fase = 'esperando_retorno_cliente';
+    }
     guardarPedidos();
     renderPedidos();
     mostrarToast('Mensaje enviado al cliente por WhatsApp.', 'success');
@@ -4305,6 +4421,9 @@ function notificarClienteEntregaPorteria(index, pedidoId) {
 }
 
 function ofrecerNotificarClientePorteriaSiPendiente() {
+  if (flujoPostCierrePedido && flujoPostCierrePedido.fase === 'preguntar_cliente') {
+    return ofrecerNotificarClienteTrasCierrePedido();
+  }
   const pendiente = pedidos.find((p) => pedidoPendienteNotificarClientePorteria(p));
   if (!pendiente) return false;
   const id = Number(pendiente.id);
@@ -4312,9 +4431,6 @@ function ofrecerNotificarClientePorteriaSiPendiente() {
   if (hayModalBloqueandoNotificacionCliente()) return false;
 
   porteriaClienteModalOfrecido.add(id);
-  if (pedidoIdPendienteSiguienteTrasCliente == null) {
-    pedidoIdPendienteSiguienteTrasCliente = pendiente.id;
-  }
   const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
   mostrarModalDecision({
     titulo: 'Notificar al cliente',
@@ -4414,7 +4530,9 @@ function notificarClienteNoEntregado(index, pedidoId) {
     pedidoFinal.pendienteNotificarClienteNoEntregado = false;
     pedidoFinal.clienteNotificadoNoEntregado = true;
     noEntregadoClienteModalOfrecido.add(Number(pedidoFinal.id));
-    esperandoRetornoParaSiguientePedido = true;
+    if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedidoFinal.id)) {
+      flujoPostCierrePedido.fase = 'esperando_retorno_cliente';
+    }
     guardarPedidos();
     renderPedidos();
     mostrarToast('Mensaje enviado al cliente por WhatsApp.', 'success');
@@ -4422,6 +4540,9 @@ function notificarClienteNoEntregado(index, pedidoId) {
 }
 
 function ofrecerNotificarClienteNoEntregadoSiPendiente() {
+  if (flujoPostCierrePedido && flujoPostCierrePedido.fase === 'preguntar_cliente') {
+    return ofrecerNotificarClienteTrasCierrePedido();
+  }
   const pendiente = pedidos.find((p) => pedidoPendienteNotificarClienteNoEntregado(p));
   if (!pendiente) return false;
   const id = Number(pendiente.id);
@@ -4429,9 +4550,6 @@ function ofrecerNotificarClienteNoEntregadoSiPendiente() {
   if (hayModalBloqueandoNotificacionCliente()) return false;
 
   noEntregadoClienteModalOfrecido.add(id);
-  if (pedidoIdPendienteSiguienteTrasCliente == null) {
-    pedidoIdPendienteSiguienteTrasCliente = pendiente.id;
-  }
   const indexFinal = pedidos.findIndex((p) => Number(p.id) === id);
   mostrarModalDecision({
     titulo: 'Notificar al cliente',
@@ -4451,23 +4569,53 @@ function ofrecerNotificarClienteNoEntregadoSiPendiente() {
 function configurarRetornoNotificarClientePorteria() {
   if (configurarRetornoNotificarClientePorteria._listo) return;
   configurarRetornoNotificarClientePorteria._listo = true;
-  const revisar = () => {
-    if (document.visibilityState && document.visibilityState !== 'visible') return;
-    const ofrecioPorteria = ofrecerNotificarClientePorteriaSiPendiente();
-    const ofrecioNoEntregado = ofrecerNotificarClienteNoEntregadoSiPendiente();
-    if (ofrecioPorteria || ofrecioNoEntregado) return;
+  const avanzarTrasRetornoReal = () => {
     if (hayModalBloqueandoNotificacionCliente()) return;
-    if (
-      esperandoRetornoParaSiguientePedido &&
-      pedidoIdPendienteSiguienteTrasCliente != null &&
-      !pedidos.some((p) => pedidoPendienteNotificarClientePorteria(p) || pedidoPendienteNotificarClienteNoEntregado(p))
-    ) {
-      continuarConSiguientePedidoTrasCliente();
+
+    const flujo = flujoPostCierrePedido;
+    if (flujo) {
+      if (flujo.fase === 'preguntar_cliente') {
+        ofrecerNotificarClienteTrasCierrePedido();
+        return;
+      }
+      if (flujo.fase === 'esperando_retorno_cliente') {
+        enviarMensajeTiendaFlujoPostCierre();
+        return;
+      }
+      if (flujo.fase === 'esperando_retorno_tienda' || flujo.fase === 'listo_siguiente') {
+        continuarConSiguientePedidoTrasCierre();
+        return;
+      }
     }
+
+    const ofrecioPorteria = ofrecerNotificarClientePorteriaSiPendiente();
+    if (ofrecioPorteria) return;
+    ofrecerNotificarClienteNoEntregadoSiPendiente();
   };
-  document.addEventListener('visibilitychange', revisar);
-  window.addEventListener('focus', revisar);
-  window.addEventListener('pageshow', revisar);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flujoPostCierreEstabaOculto = true;
+      return;
+    }
+    if (document.visibilityState !== 'visible') return;
+    if (!flujoPostCierreEstabaOculto && flujoPostCierrePedido && flujoPostCierrePedido.fase !== 'preguntar_cliente') {
+      return;
+    }
+    flujoPostCierreEstabaOculto = false;
+    avanzarTrasRetornoReal();
+  });
+  window.addEventListener('focus', () => {
+    if (!flujoPostCierreEstabaOculto && flujoPostCierrePedido && flujoPostCierrePedido.fase !== 'preguntar_cliente') {
+      return;
+    }
+    if (flujoPostCierreEstabaOculto) flujoPostCierreEstabaOculto = false;
+    avanzarTrasRetornoReal();
+  });
+  window.addEventListener('pageshow', () => {
+    flujoPostCierreEstabaOculto = false;
+    avanzarTrasRetornoReal();
+  });
 }
 
 function fotoEntregado(index, pedidoId) {
@@ -4496,11 +4644,12 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   pedido.montoDaviplata = Number(datosPago.montoDaviplata || 0);
   pedido.montoEfectivo = Number(datosPago.montoEfectivo || 0);
 
-  const numeroAdmin = obtenerSoporteWhatsApp();
   const esPorteria =
     pagoEntregadoPendiente &&
     pagoEntregadoPendiente.lugarEntrega === 'porteria' &&
     String(pagoEntregadoPendiente.recibidoPor || '').trim() !== '';
+  const enviarWhatsAppAdmin = pagoEntregadoPendiente.enviarWhatsAppAdmin !== false;
+
   if (esPorteria) {
     const recibidoPor = String(pagoEntregadoPendiente.recibidoPor || '').trim();
     const mensaje = construirMensajeEntregaRegistrada({
@@ -4509,15 +4658,27 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
       porteriaRecibidoPor: recibidoPor,
     });
     guardarEntregaPorteriaEnPedido(pedido, mensaje, recibidoPor);
-    porteriaClienteModalOfrecido.delete(Number(pedidoId));
-    pedidoIdPendienteSiguienteTrasCliente = pedidoId;
-    esperandoRetornoParaSiguientePedido = false;
-  } else {
-    limpiarEntregaPorteriaEnPedido(pedido);
+    pagoEntregadoPendiente = {
+      index: null,
+      pedidoId: null,
+      enviarWhatsAppAdmin: true,
+      lugarEntrega: null,
+      recibidoPor: ''
+    };
+    marcarEntregado(indexFinal);
+    iniciarFlujoPostCierrePedido({
+      pedidoId,
+      tipo: 'porteria',
+      mensajeTienda: mensaje,
+      enviarWhatsAppAdmin,
+    });
+    return;
   }
 
+  limpiarEntregaPorteriaEnPedido(pedido);
   const mensaje = construirMensajeEntregaRegistrada(pedido);
-  if (pagoEntregadoPendiente.enviarWhatsAppAdmin !== false) {
+  if (enviarWhatsAppAdmin) {
+    const numeroAdmin = obtenerSoporteWhatsApp();
     void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.').then((copiado) => {
       if (copiado) abrirWhatsAppChat(numeroAdmin);
     });
@@ -4530,9 +4691,7 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
     recibidoPor: ''
   };
   marcarEntregado(indexFinal);
-  if (!esPorteria) {
-    notificarSiguientePedido(pedidoId);
-  }
+  notificarSiguientePedido(pedidoId);
 }
 
 function seleccionarMetodoPagoEntregado(metodo) {
@@ -4710,23 +4869,22 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo) {
 
   const mensajeTienda = construirMensajeNoEntregadoTienda(pedido, pedidoId, enUbicacion, motivo);
   guardarNoEntregadoNotificacionEnPedido(pedido, mensajeTienda, motivo, enUbicacion);
-  noEntregadoClienteModalOfrecido.delete(Number(pedidoId));
-
-  const numeroAdmin = obtenerSoporteWhatsApp();
-  void copiarTextoAlPortapapeles(mensajeTienda, 'Mensaje copiado. Pégalo en el chat de la tienda.').then((copiado) => {
-    if (copiado) abrirWhatsAppChat(numeroAdmin);
-  });
 
   pedido.entregado = true;
   pedido.enCurso = false;
   pedido.llegoDestino = false;
   pedido.posicionPendiente = null;
   pedido.noEntregado = true;
-  pedidoIdPendienteSiguienteTrasCliente = pedidoId;
-  esperandoRetornoParaSiguientePedido = false;
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
+
+  iniciarFlujoPostCierrePedido({
+    pedidoId,
+    tipo: 'no_entregado',
+    mensajeTienda,
+    enviarWhatsAppAdmin: true,
+  });
 }
 
 // --- Enrutamiento ---
