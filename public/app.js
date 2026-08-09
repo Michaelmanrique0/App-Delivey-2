@@ -4049,9 +4049,9 @@ const porteriaClienteModalOfrecido = new Set();
 const noEntregadoClienteModalOfrecido = new Set();
 /**
  * Flujo tras portería / no entregado:
- * 1) preguntar notificar cliente (inmediato)
- * 2) enviar a tienda
- * 3) ofrecer siguiente pedido
+ * 1) notificar a la tienda
+ * 2) notificar al cliente
+ * 3) ofrecer siguiente pedido (en camino / enrutar)
  */
 let flujoPostCierrePedido = null;
 /** Solo avanza de fase al volver realmente desde otra app/pestaña. */
@@ -4294,6 +4294,7 @@ function limpiarEntregaPorteriaEnPedido(pedido) {
 
 function limpiarFlujoPostCierrePedido() {
   flujoPostCierrePedido = null;
+  flujoPostCierreEstabaOculto = false;
 }
 
 function iniciarFlujoPostCierrePedido({ pedidoId, tipo, mensajeTienda, enviarWhatsAppAdmin = true }) {
@@ -4302,31 +4303,36 @@ function iniciarFlujoPostCierrePedido({ pedidoId, tipo, mensajeTienda, enviarWha
     tipo, // 'porteria' | 'no_entregado'
     mensajeTienda: String(mensajeTienda || ''),
     enviarWhatsAppAdmin: enviarWhatsAppAdmin !== false,
-    fase: 'preguntar_cliente',
+    fase: 'enviar_tienda',
   };
   if (tipo === 'porteria') porteriaClienteModalOfrecido.delete(Number(pedidoId));
   if (tipo === 'no_entregado') noEntregadoClienteModalOfrecido.delete(Number(pedidoId));
-  // Tras cerrar modales de pago/motivo, preguntar al cliente de inmediato.
+  // Primero tienda; al regresar se pregunta por el cliente.
   window.setTimeout(() => {
-    ofrecerNotificarClienteTrasCierrePedido();
+    enviarMensajeTiendaFlujoPostCierre();
   }, 0);
+}
+
+function toastMensajeTiendaFlujo(tipo) {
+  if (tipo === 'no_entregado') {
+    return 'Mensaje copiado. Pégalo en el chat de la tienda (no entregado).';
+  }
+  return 'Mensaje copiado. Pégalo en el chat de la tienda y adjunta la foto de entrega.';
 }
 
 function enviarMensajeTiendaFlujoPostCierre() {
   const flujo = flujoPostCierrePedido;
   if (!flujo) return;
   if (!flujo.enviarWhatsAppAdmin) {
-    flujo.fase = 'listo_siguiente';
-    window.setTimeout(() => continuarConSiguientePedidoTrasCierre(), 0);
+    flujo.fase = 'preguntar_cliente';
+    window.setTimeout(() => ofrecerNotificarClienteTrasCierrePedido(), 0);
     return;
   }
   const numeroAdmin = obtenerSoporteWhatsApp();
   const mensaje = String(flujo.mensajeTienda || '');
   flujo.fase = 'esperando_retorno_tienda';
-  void copiarTextoAlPortapapeles(
-    mensaje,
-    'Mensaje copiado. Pégalo en el chat de la tienda.'
-  ).then((copiado) => {
+  flujoPostCierreEstabaOculto = false;
+  void copiarTextoAlPortapapeles(mensaje, toastMensajeTiendaFlujo(flujo.tipo)).then((copiado) => {
     if (copiado) abrirWhatsAppChat(numeroAdmin);
   });
 }
@@ -4346,13 +4352,13 @@ function ofrecerNotificarClienteTrasCierrePedido() {
 
   const pedido = pedidos.find((p) => Number(p.id) === Number(flujo.pedidoId));
   if (!pedido) {
-    limpiarFlujoPostCierrePedido();
+    continuarConSiguientePedidoTrasCierre();
     return false;
   }
 
   if (flujo.tipo === 'porteria') {
     if (!pedidoPendienteNotificarClientePorteria(pedido)) {
-      enviarMensajeTiendaFlujoPostCierre();
+      continuarConSiguientePedidoTrasCierre();
       return false;
     }
     const id = Number(pedido.id);
@@ -4374,7 +4380,7 @@ function ofrecerNotificarClienteTrasCierrePedido() {
 
   if (flujo.tipo === 'no_entregado') {
     if (!pedidoPendienteNotificarClienteNoEntregado(pedido)) {
-      enviarMensajeTiendaFlujoPostCierre();
+      continuarConSiguientePedidoTrasCierre();
       return false;
     }
     const id = Number(pedido.id);
@@ -4406,10 +4412,6 @@ function declinarNotificarClientePorteria(pedido) {
   pedido.pendienteNotificarClientePorteria = false;
   guardarPedidos();
   renderPedidos();
-  if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedido.id)) {
-    enviarMensajeTiendaFlujoPostCierre();
-    return;
-  }
   continuarConSiguientePedidoTrasCierre();
 }
 
@@ -4418,10 +4420,6 @@ function declinarNotificarClienteNoEntregado(pedido) {
   pedido.pendienteNotificarClienteNoEntregado = false;
   guardarPedidos();
   renderPedidos();
-  if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedido.id)) {
-    enviarMensajeTiendaFlujoPostCierre();
-    return;
-  }
   continuarConSiguientePedidoTrasCierre();
 }
 
@@ -4446,6 +4444,7 @@ function notificarClienteEntregaPorteria(index, pedidoId) {
     porteriaClienteModalOfrecido.add(Number(pedidoFinal.id));
     if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedidoFinal.id)) {
       flujoPostCierrePedido.fase = 'esperando_retorno_cliente';
+      flujoPostCierreEstabaOculto = false;
     }
     guardarPedidos();
     renderPedidos();
@@ -4565,6 +4564,7 @@ function notificarClienteNoEntregado(index, pedidoId) {
     noEntregadoClienteModalOfrecido.add(Number(pedidoFinal.id));
     if (flujoPostCierrePedido && Number(flujoPostCierrePedido.pedidoId) === Number(pedidoFinal.id)) {
       flujoPostCierrePedido.fase = 'esperando_retorno_cliente';
+      flujoPostCierreEstabaOculto = false;
     }
     guardarPedidos();
     renderPedidos();
@@ -4607,16 +4607,21 @@ function configurarRetornoNotificarClientePorteria() {
 
     const flujo = flujoPostCierrePedido;
     if (flujo) {
+      if (flujo.fase === 'esperando_retorno_tienda') {
+        flujo.fase = 'preguntar_cliente';
+        ofrecerNotificarClienteTrasCierrePedido();
+        return;
+      }
       if (flujo.fase === 'preguntar_cliente') {
         ofrecerNotificarClienteTrasCierrePedido();
         return;
       }
-      if (flujo.fase === 'esperando_retorno_cliente') {
-        enviarMensajeTiendaFlujoPostCierre();
+      if (flujo.fase === 'esperando_retorno_cliente' || flujo.fase === 'listo_siguiente') {
+        continuarConSiguientePedidoTrasCierre();
         return;
       }
-      if (flujo.fase === 'esperando_retorno_tienda' || flujo.fase === 'listo_siguiente') {
-        continuarConSiguientePedidoTrasCierre();
+      if (flujo.fase === 'enviar_tienda') {
+        enviarMensajeTiendaFlujoPostCierre();
         return;
       }
     }
