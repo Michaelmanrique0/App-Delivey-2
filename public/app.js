@@ -3421,7 +3421,7 @@ let edicionPedidoPendiente = { index: null };
 
 function asegurarModalEditarPedido() {
   let modal = document.getElementById('modalEditarPedido');
-  if (modal && document.getElementById('editarPedidoNombre')) return modal;
+  if (modal && document.getElementById('editarPedidoDireccion')) return modal;
   if (modal) {
     modal.remove();
     modal = null;
@@ -3433,12 +3433,14 @@ function asegurarModalEditarPedido() {
   modal.innerHTML = `
     <div class="modal-no-entregado-card modal-editar-pedido-card">
       <h3>Editar pedido</h3>
-      <p class="modal-editar-pedido-ayuda">Puedes cambiar el nombre, teléfono, lista de productos (una línea por producto), valor y enlace del mapa.</p>
+      <p class="modal-editar-pedido-ayuda">Puedes cambiar el nombre, teléfono, dirección, lista de productos (una línea por producto), valor y enlace del mapa.</p>
       <div class="modal-editar-pedido-body">
         <label class="modal-editar-pedido-label" for="editarPedidoNombre">Nombre</label>
         <input id="editarPedidoNombre" type="text" autocomplete="name" class="modal-editar-pedido-input">
         <label class="modal-editar-pedido-label" for="editarPedidoTelefono">Teléfono</label>
         <input id="editarPedidoTelefono" type="text" inputmode="tel" autocomplete="tel" class="modal-editar-pedido-input">
+        <label class="modal-editar-pedido-label" for="editarPedidoDireccion">Dirección</label>
+        <textarea id="editarPedidoDireccion" class="modal-editar-pedido-textarea" rows="3" spellcheck="true" placeholder="Dirección completa del pedido"></textarea>
         <label class="modal-editar-pedido-label" for="editarPedidoProductos">Productos (uno por línea)</label>
         <textarea id="editarPedidoProductos" class="modal-editar-pedido-textarea" rows="6" spellcheck="false"></textarea>
         <label class="modal-editar-pedido-label" for="editarPedidoValor">Valor</label>
@@ -3478,6 +3480,7 @@ function guardarEdicionPedido() {
 
   const inputNombre = document.getElementById('editarPedidoNombre');
   const inputTel = document.getElementById('editarPedidoTelefono');
+  const inputDir = document.getElementById('editarPedidoDireccion');
   const taProd = document.getElementById('editarPedidoProductos');
   const inputValor = document.getElementById('editarPedidoValor');
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
@@ -3487,6 +3490,7 @@ function guardarEdicionPedido() {
   const tels = normalizarTelefonosDesdeTexto(telTexto);
   pedido.telefonos = tels;
   pedido.telefono = tels[0] || telTexto;
+  pedido.direccion = inputDir ? String(inputDir.value || '').trim() : '';
   if (taProd) {
     pedido.productos = productosPedidoDesdeTextoPlano(taProd.value);
   }
@@ -3526,11 +3530,13 @@ function editarPedido(index) {
   const modal = asegurarModalEditarPedido();
   const inputNombre = document.getElementById('editarPedidoNombre');
   const inputTel = document.getElementById('editarPedidoTelefono');
+  const inputDir = document.getElementById('editarPedidoDireccion');
   const taProd = document.getElementById('editarPedidoProductos');
   const inputValor = document.getElementById('editarPedidoValor');
   const inputMapUrl = document.getElementById('editarPedidoMapUrl');
   if (inputNombre) inputNombre.value = String(pedido.nombre || '');
   if (inputTel) inputTel.value = textoTelefonosPedidoParaInput(pedido) || String(pedido.telefono || '');
+  if (inputDir) inputDir.value = String(pedido.direccion || '');
   if (taProd) taProd.value = lineasProductosPedidoNormalizadas(pedido).join('\n');
   if (inputValor) inputValor.value = formatearDigitosMilesEsCo(String(pedido.valor || ''));
   if (inputMapUrl) inputMapUrl.value = String(pedido.mapUrl || '');
