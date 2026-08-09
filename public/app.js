@@ -1472,8 +1472,10 @@ function normalizarTextoParaExtraerPedido(s) {
 }
 
 /** Delimitador de siguiente campo en plantillas de pedido (tras normalizar). */
+const _RE_TONO_PIEL = '(?:\\u{1F3FB}|\\u{1F3FC}|\\u{1F3FD}|\\u{1F3FE}|\\u{1F3FF})?';
+const _RE_EMOJI_NOMBRE = `🙋${_RE_TONO_PIEL}`;
 const _RE_FIN_CAMPO_PEDIDO =
-  '(?=🙋|📲|💰|Nombre\\b|Tel[ée]fono|Celular|WhatsApp|M[oó]vil\\b|Producto\\b|Pedido\\b|¿Todo|Para agilizar|Env[ií]o|https?:|$)';
+  `(?=${_RE_EMOJI_NOMBRE}|📲|💰|Nombre\\b|Tel[ée]fono|Celular|WhatsApp|M[oó]vil\\b|Producto\\b|Pedido\\b|¿Todo|Para agilizar|Env[ií]o|https?:|$)`;
 
 /** Tras "Nombre:" puede venir dirección antes que teléfono; sin 📍/Dirección el capture se come ese bloque. */
 const _RE_FIN_TRAS_NOMBRE = _RE_FIN_CAMPO_PEDIDO.replace(
@@ -1551,9 +1553,19 @@ function extraerCamposPedido(bloque) {
 
   let direccion = '';
   const dirPatrones = [
+    // Con dos puntos: "📍 Dirección: …" / "📍 …:"
     new RegExp(`📍[^:\\n]*:\\s*([\\s\\S]*?)${finCampo}`, 'iu'),
     new RegExp(
       `(?:Direcci[oó]n\\s+completa|Direcci[oó]n|Ubicaci[oó]n|Direccion)[^:\\n]*:\\s*([\\s\\S]*?)${finCampo}`,
+      'iu'
+    ),
+    // Sin dos puntos (formato WhatsApp): "📍 Dirección completa barrio …\nKR …"
+    new RegExp(
+      `📍\\s*(?:Direcci[oó]n(?:\\s+completa)?|Ubicaci[oó]n)?\\s*([\\s\\S]*?)${finCampo}`,
+      'iu'
+    ),
+    new RegExp(
+      `(?:Direcci[oó]n\\s+completa|Direcci[oó]n|Ubicaci[oó]n)\\b\\s+([\\s\\S]*?)${finCampo}`,
       'iu'
     ),
   ];
@@ -1561,22 +1573,27 @@ function extraerCamposPedido(bloque) {
     const m = b.match(re);
     if (m && m[1]) {
       direccion = m[1].trim().replace(/\n\s*/g, ' ').trim();
-      break;
+      if (direccion) break;
     }
   }
 
   let nombre = '';
   const finNombre = _RE_FIN_TRAS_NOMBRE;
   const nomPatrones = [
-    new RegExp(`🙋[^:\\n]*:\\s*([\\s\\S]*?)${finNombre}`, 'iu'),
-    new RegExp(`Nombre[^:\\n]*:\\s*([\\s\\S]*?)${finNombre}`, 'i'),
+    new RegExp(`${_RE_EMOJI_NOMBRE}[^:\\n]*:\\s*([\\s\\S]*?)${finNombre}`, 'iu'),
+    // Sin dos puntos: "🙋🏻 Nombre de quien recibirá el pedido\nleonide"
+    new RegExp(
+      `${_RE_EMOJI_NOMBRE}\\s*(?:Nombre[^\\n]*)?\\n+\\s*([^\\n]+)`,
+      'iu'
+    ),
+    new RegExp(`Nombre[^:\\n]*:\\s*([\\s\\S]*?)${finNombre}`, 'iu'),
     /(?:Recibe|A\s+nombre\s+de|Contacto)\s*:\s*([^\n]+)/i,
   ];
   for (const re of nomPatrones) {
     const m = b.match(re);
     if (m && m[1]) {
       nombre = m[1].trim().split('\n')[0].trim();
-      break;
+      if (nombre) break;
     }
   }
 
@@ -1587,7 +1604,17 @@ function extraerCamposPedido(bloque) {
       `📲[^:\\n]*:\\s*([\\s\\S]*?)(?=💰|Producto|Pedido|Horario|¿Todo|Para agilizar|Env[ií]o|https?:|$)`,
       'u'
     ),
+    // Sin dos puntos: "📲 Número de celular\n3018284151"
+    new RegExp(
+      `📲\\s*(?:N[uú]mero\\s+de\\s+celular|Celular|Tel[ée]fono|WhatsApp|M[oó]vil)?\\s*\\n+\\s*([\\d\\s+().-]{7,})`,
+      'iu'
+    ),
+    new RegExp(
+      `📲\\s*(?:N[uú]mero\\s+de\\s+celular|Celular|Tel[ée]fono)?\\s+([\\d\\s+().-]{7,})`,
+      'iu'
+    ),
     /(?:Tel[ée]fono|N[uú]mero\s+de\s+celular|Celular|WhatsApp|M[oó]vil)[^:\n]*:\s*([^\n]+)/i,
+    /(?:N[uú]mero\s+de\s+celular|Celular|Tel[ée]fono)\b\s*\n+\s*([\d\s+().-]{7,})/i,
   ];
   for (const re of telPatrones) {
     const m = b.match(re);
@@ -1602,7 +1629,7 @@ function extraerCamposPedido(bloque) {
   }
 
   const finValor =
-    '(?=Env[ií]o|Horario|Producto|¿Todo|Para agilizar|📍|🙋|📲|💰|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
+    `(?=Env[ií]o|Horario|Producto|¿Todo|Para agilizar|📍|${_RE_EMOJI_NOMBRE}|📲|💰|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)`;
   let valor = '0';
   const valPatrones = [
     // No tratar 💰 Envío como valor a recoger (el domicilio no es lo que cobras al cliente).
