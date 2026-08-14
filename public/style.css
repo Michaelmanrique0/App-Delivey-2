@@ -26,6 +26,26 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.banner-offline {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 10050;
+  margin: 0;
+  padding: 0.65rem 1rem;
+  background: #92400e;
+  color: #fffbeb;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.banner-offline[style*="display: block"],
+.banner-offline.is-visible {
+  display: block;
+}
+
 /* Sin scroll del documento en login/registro (pantalla fija) */
 body.auth-layout {
   overflow: hidden;

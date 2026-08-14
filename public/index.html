@@ -3,10 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Gestión de Pedidos - Delivery App</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-<link rel="stylesheet" href="style.css?v=20260419menunopagos">
+<link rel="stylesheet" href="style.css?v=20260814offline">
 <script>
 (function () {
   try {
@@ -26,6 +32,10 @@
 </head>
 
 <body>
+
+<div id="bannerOffline" class="banner-offline" style="display:none;" role="status" aria-live="polite">
+  Sin internet — se muestran los pedidos guardados en este dispositivo. Los cambios se sincronizarán al recuperar conexión.
+</div>
 
 <div id="pantallaAuth" class="pantalla-auth" style="display:none;">
   <div class="auth-card">
@@ -365,6 +375,15 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260415mediosPagoNotifNequi"></script>
+<script src="app.js?v=20260814offline"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function (err) {
+      console.warn('[sw] No se pudo registrar:', err);
+    });
+  });
+}
+</script>
 </body>
 </html>

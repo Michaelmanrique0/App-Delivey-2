@@ -825,7 +825,16 @@ app.patch(
 );
 
 const staticDir = path.join(__dirname, '..', 'public');
-app.use(express.static(staticDir));
+app.use(
+  express.static(staticDir, {
+    setHeaders(res, filePath) {
+      if (String(filePath).endsWith(`${path.sep}sw.js`) || String(filePath).endsWith('/sw.js')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Service-Worker-Allowed', '/');
+      }
+    },
+  })
+);
 
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {

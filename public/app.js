@@ -23,6 +23,8 @@ const AUTH_TOKEN_LEGACY_KEY = 'deliveryAuthToken';
 const AUTH_ACTIVE_USER_KEY = 'deliveryAuthActiveUserId';
 /** Id del usuario dueño del token activo (redundante con AUTH_ACTIVE_USER_KEY). */
 const AUTH_USER_ID_KEY = 'deliveryAuthUserId';
+/** Copia local de la sesión para entrar sin internet. */
+const SESION_USUARIO_CACHE_KEY = 'deliverySesionUsuario_v1';
 
 function authTokenStorageKey(userId) {
   return `deliveryAuthToken_${userId}`;
@@ -47,6 +49,88 @@ function esSesionAdmin() {
 
 function esSesionMensajero() {
   return !!sesionUsuario && sesionUsuario.role === 'mensajero';
+}
+
+function appEstaOnline() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+
+function guardarSesionUsuarioCache(user) {
+  try {
+    if (!user || user.id == null) {
+      localStorage.removeItem(SESION_USUARIO_CACHE_KEY);
+      return;
+    }
+    localStorage.setItem(
+      SESION_USUARIO_CACHE_KEY,
+      JSON.stringify({
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+      })
+    );
+  } catch (_e) {}
+}
+
+function cargarSesionUsuarioCache() {
+  try {
+    const raw = localStorage.getItem(SESION_USUARIO_CACHE_KEY);
+    if (!raw) return null;
+    const u = JSON.parse(raw);
+    if (!u || u.id == null) return null;
+    return u;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function actualizarBannerOffline() {
+  const banner = document.getElementById('bannerOffline');
+  if (!banner) return;
+  const offline = !appEstaOnline();
+  banner.style.display = offline ? 'block' : 'none';
+  banner.classList.toggle('is-visible', offline);
+}
+
+function configurarSoporteOfflineApp() {
+  if (configurarSoporteOfflineApp._listo) return;
+  configurarSoporteOfflineApp._listo = true;
+  actualizarBannerOffline();
+  window.addEventListener('online', () => {
+    actualizarBannerOffline();
+    mostrarToast('Conexión recuperada. Sincronizando…', 'success', 4000);
+    void reintentarSyncTrasRecuperarConexion();
+  });
+  window.addEventListener('offline', () => {
+    actualizarBannerOffline();
+    mostrarToast('Sin internet. Seguirás viendo los pedidos guardados aquí.', 'warning', 6000);
+  });
+}
+
+async function reintentarSyncTrasRecuperarConexion() {
+  if (!sesionUsuario || !appEstaOnline()) return;
+  try {
+    await syncPedidosAlServidor();
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await refrescarPedidosDesdeApi();
+    guardarCachePedidos();
+    renderPedidos();
+    actualizarMarcadores();
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await refrescarPaymentConfigDesdeServidor();
+  } catch (_e) {}
+  if (esSesionAdmin()) {
+    try {
+      await cargarMensajerosParaAsignacion();
+    } catch (_e) {}
+  }
 }
 
 function getAuthActiveUserId() {
@@ -142,12 +226,16 @@ async function apiJson(path, options = {}) {
 
 function programarSyncPedidosRemoto() {
   if (!sesionUsuario) return;
+  if (!appEstaOnline()) return;
   if (syncRemotoTimer) clearTimeout(syncRemotoTimer);
   syncRemotoTimer = setTimeout(() => {
     syncRemotoTimer = null;
+    if (!appEstaOnline()) return;
     syncPedidosAlServidor().catch((e) => {
       console.error(e);
-      mostrarToast(String(e.message || e), 'error', 7000);
+      if (appEstaOnline()) {
+        mostrarToast(String(e.message || e), 'error', 7000);
+      }
     });
   }, 450);
 }
@@ -190,6 +278,7 @@ async function refrescarPedidosDesdeApi() {
   } else {
     nextPedidoId = 1;
   }
+  guardarCachePedidos();
 
   // Aviso si el admin modificó el orden (solo mensajeros reciben routeNotice).
   if (data && data.routeNotice && data.routeNotice.at) {
@@ -880,18 +969,46 @@ function construirBloquePagoNotificacion() {
   const lineas = [];
   const nom = cfg.nombreTitular ? ` (${cfg.nombreTitular})` : '';
   if (cfg.tieneNequi && cfg.numeroNequi) {
-    lineas.push(`- Nequi: ${cfg.numeroNequi}${nom}`);
+    lineas.push(`- *Nequi*: ${cfg.numeroNequi}${nom}`);
   }
   if (cfg.tieneDaviplata && cfg.numeroDaviplata) {
-    lineas.push(`- Daviplata: ${cfg.numeroDaviplata}${nom}`);
+    lineas.push(`- *Daviplata*: ${cfg.numeroDaviplata}${nom}`);
   }
   if (cfg.tieneLlave && cfg.llavePago) {
-    lineas.push(`- Bre-B: ${cfg.llavePago}`);
+    lineas.push(`- *Llave / Bre-B*: ${cfg.llavePago}`);
   }
   if (lineas.length === 0) {
-    return 'Actualmente no hay medios de pago digitales configurados.';
+    return 'El pago puede ser en *efectivo*. Si no tienes efectivo, avísame para indicarte cómo pagar por *Nequi*, *Daviplata* o por la *llave*.';
   }
-  return `Si deseas pagar por transferencia, usa:\n${lineas.join('\n')}`;
+  return (
+    'El pago puede ser en *efectivo*. Si no tienes la plata en efectivo, puedes pagar por *Nequi*, *Daviplata* o por la *llave*:\n' +
+    lineas.join('\n')
+  );
+}
+
+/** Detecta si el pedido es un cambio (método o texto del formato). */
+function pedidoEsCambioParaNotificacion(pedido) {
+  if (!pedido) return false;
+  if (String(pedido.metodoPagoEntrega || '') === 'es_cambio') return true;
+  const texto = [
+    pedido.textoOriginal,
+    pedido.nombre,
+    pedido.direccion,
+    Array.isArray(pedido.productos) ? pedido.productos.join(' ') : '',
+  ]
+    .map((x) => String(x || ''))
+    .join('\n');
+  return /\bes\s+un\s+cambio\b|\bcambio\s+de\s+producto\b|\bpedido\s+de\s+cambio\b|\bpara\s+cambio\b/i.test(
+    texto
+  );
+}
+
+function montoACobrarParaNotificacionEnCamino(pedido) {
+  if (!pedido) return 0;
+  if (pedidoEsCambioParaNotificacion(pedido)) return 0;
+  if (String(pedido.metodoPagoEntrega || '') === 'pagado_tienda') return 0;
+  const n = parseInt(pedido.valor || 0, 10);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function normalizarTextoParaWhatsApp(texto) {
@@ -5325,25 +5442,47 @@ function debeIncluirDisculpaDemoraNotificacionEnCamino() {
   return minutosDelDiaRelojLocal() >= 17 * 60 + 55;
 }
 
-function construirMensajeNotificarEnCamino(nombre, precio, bloquePago) {
+function construirMensajeNotificarEnCamino(pedido) {
+  const nombre = String(pedido?.nombre || '').trim() || 'cliente';
   const saludo = saludoPorHoraDispositivo();
   const conDisculpa = debeIncluirDisculpaDemoraNotificacionEnCamino();
-  const cuerpo = conDisculpa
-    ? 'Te pedimos disculpas por la demora en la entrega; por tráfico o por condiciones climáticas hubo retraso en la entrega. Queremos informarte que ya *VOY EN CAMINO* hacia tu ubicación para entregar el pedido de Valero Store.'
-    : 'Te informamos que ya *VOY EN CAMINO* hacia tu ubicación para entregar el pedido de Valero Store.';
+  const monto = montoACobrarParaNotificacionEnCamino(pedido);
+  const esCambio = pedidoEsCambioParaNotificacion(pedido);
+  const bloquePago = construirBloquePagoNotificacion();
+
+  const anuncioCamino = conDisculpa
+    ? `Soy el mensajero externo de Valero Storee. Te pido disculpas por la demora: por clima o por tráfico los pedidos se han demorado. Te confirmo que ya *VOY EN CAMINO* hacia tu ubicación de entrega y que *aún no he llegado*.`
+    : `Te confirmo que ya *VOY EN CAMINO* hacia tu ubicación de entrega y que *aún no he llegado*.`;
+
+  const consideraciones = [
+    'Estate pendiente del celular: te llamaré por WhatsApp para notificarte mi llegada al punto.',
+  ];
+  if (esCambio) {
+    consideraciones.push('Ten el pedido listo para el cambio.');
+  } else if (monto > 0) {
+    consideraciones.push(
+      `Ten el dinero en mano: $${monto.toLocaleString('es-CO')}.`
+    );
+  }
+  consideraciones.push(
+    'Mi tiempo de espera es de *10 minutos* desde la primera llamada realizada por WhatsApp.'
+  );
+
+  const cierreCamino =
+    'Te recuerdo que *VOY EN CAMINO* hacia tu ubicación de entrega y que *aún no he llegado*.';
 
   return `${saludo}, ${nombre}
 
-${cuerpo}
+${anuncioCamino}
 
 Por favor ten en cuenta:
-- Estar pendiente con los $${precio} en mano
-- NO CUENTO CON CAMBIO
-- El tiempo de espera desde la llegada al punto de entrega es de 10 minutos
+${consideraciones.map((l) => `- ${l}`).join('\n')}
 
 ${bloquePago}
 
-Gracias por tu compra ${nombre}`;
+${cierreCamino}
+
+Gracias por tu compra, ${nombre}.`;
 }
 
 async function notificarEnCamino(index, pedidoId, opciones = {}) {
@@ -5379,10 +5518,7 @@ async function notificarEnCamino(index, pedidoId, opciones = {}) {
     return;
   }
 
-  const nombre = pedidoFinal.nombre || 'cliente';
-  const precio = parseInt(pedidoFinal.valor || 0, 10).toLocaleString('es-CO');
-  const bloquePago = construirBloquePagoNotificacion();
-  const mensaje = construirMensajeNotificarEnCamino(nombre, precio, bloquePago);
+  const mensaje = construirMensajeNotificarEnCamino(pedidoFinal);
 
   if (tieneNotificacionEnCaminoParcial(pedidoFinal)) {
     ejecutarNotificacionEnCaminoParcial(indexFinal, pedidoId, pedidoFinal, opciones, mensaje);
@@ -6597,19 +6733,37 @@ async function iniciarApp() {
   if (!sesionUsuario) return;
   aplicarVisibilidadPorRol();
   exponerDebugAppDelivery();
-  try {
-    await refrescarPedidosDesdeApi();
-  } catch (e) {
-    console.error(e);
-    mostrarToast(
-      `No se pudieron cargar los pedidos del servidor: ${String(e.message || e)}`,
-      'error',
-      9000
-    );
+  actualizarBannerOffline();
+
+  if (!appEstaOnline()) {
     cargarPedidosDesdeLocalStorage();
+    if (pedidos.length > 0) {
+      mostrarToast('Sin internet: mostrando pedidos guardados en este dispositivo.', 'info', 7000);
+    } else {
+      mostrarToast('Sin internet y no hay pedidos guardados aún. Conéctate una vez para cargarlos.', 'warning', 9000);
+    }
+  } else {
+    try {
+      await refrescarPedidosDesdeApi();
+    } catch (e) {
+      console.error(e);
+      cargarPedidosDesdeLocalStorage();
+      const hayLocal = pedidos.length > 0;
+      mostrarToast(
+        hayLocal
+          ? `No se pudo contactar el servidor. Mostrando ${pedidos.length} pedido(s) guardado(s) aquí.`
+          : `No se pudieron cargar los pedidos del servidor: ${String(e.message || e)}`,
+        hayLocal ? 'warning' : 'error',
+        9000
+      );
+    }
   }
-  if (esSesionAdmin()) {
-    await cargarMensajerosParaAsignacion();
+  if (esSesionAdmin() && appEstaOnline()) {
+    try {
+      await cargarMensajerosParaAsignacion();
+    } catch (e) {
+      console.error(e);
+    }
   }
   aplicarVisibilidadPorRol();
 
@@ -6660,6 +6814,7 @@ async function iniciarApp() {
 function cerrarSesionApp() {
   cerrarMenuUsuario();
   setAuthToken('');
+  guardarSesionUsuarioCache(null);
   sesionUsuario = null;
   try {
     sessionStorage.removeItem(AUTH_TAB_SESSION_KEY);
@@ -6686,6 +6841,7 @@ async function entrarAppConSesion(user) {
   }
 
   sesionUsuario = user;
+  guardarSesionUsuarioCache(user);
   const tokenActual = getAuthToken();
   if (tokenActual) setAuthToken(tokenActual, user.id);
 
@@ -6700,7 +6856,13 @@ async function entrarAppConSesion(user) {
     el.textContent = `${user.username} · ${user.role === 'admin' ? 'Administrador' : 'Mensajero'}`;
   }
   aplicarVisibilidadPorRol();
-  await refrescarPaymentConfigDesdeServidor();
+  if (appEstaOnline()) {
+    try {
+      await refrescarPaymentConfigDesdeServidor();
+    } catch (e) {
+      console.error(e);
+    }
+  }
   await iniciarApp();
 }
 
@@ -7417,6 +7579,7 @@ async function iniciarFlujoAuth() {
       const storedUid = getAuthUserId();
       if (storedUid && String(me.user.id) !== storedUid) {
         setAuthToken('');
+        guardarSesionUsuarioCache(null);
         limpiarVistaAppSesion();
         quitarEstiloPreRestoreUsuariosRoles();
       } else {
@@ -7425,7 +7588,21 @@ async function iniciarFlujoAuth() {
         return;
       }
     } catch (_e) {
+      const cachedUser = cargarSesionUsuarioCache();
+      const cachedUid = getAuthUserId() || (cachedUser ? String(cachedUser.id) : '');
+      if (token && cachedUser && cachedUid && String(cachedUser.id) === cachedUid) {
+        await entrarAppConSesion(cachedUser);
+        mostrarToast(
+          appEstaOnline()
+            ? 'No se pudo validar la sesión en el servidor. Usando datos guardados.'
+            : 'Sin internet: entrando con la sesión y pedidos guardados en este dispositivo.',
+          'warning',
+          8000
+        );
+        return;
+      }
       setAuthToken('');
+      guardarSesionUsuarioCache(null);
       limpiarVistaAppSesion();
       quitarEstiloPreRestoreUsuariosRoles();
     }
@@ -7538,6 +7715,7 @@ function sincronizarSesionDesdeOtraPestana() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  configurarSoporteOfflineApp();
   configurarRetornoNotificarClientePorteria();
   window.addEventListener('storage', (ev) => {
     if (

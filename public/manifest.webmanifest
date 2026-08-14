@@ -1,0 +1,18 @@
+{
+  "name": "Gestión de Pedidos Delivery",
+  "short_name": "Delivery",
+  "description": "Gestión de pedidos delivery con soporte sin internet",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
