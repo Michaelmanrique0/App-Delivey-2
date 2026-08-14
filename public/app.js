@@ -240,17 +240,28 @@ function programarSyncPedidosRemoto() {
   }, 450);
 }
 
-function setAppLoadingVisible(visible) {
+function setAppLoadingVisible(visible, mensaje) {
   const el = document.getElementById('appLoadingOverlay');
   if (!el) return;
+  const texto = el.querySelector('.app-loading-text');
+  if (texto && mensaje) texto.textContent = String(mensaje);
+  if (texto && !visible && !mensaje) {
+    texto.textContent = 'Cargando pedidos, por favor espera...';
+  }
   el.style.display = visible ? 'flex' : 'none';
   el.setAttribute('aria-hidden', visible ? 'false' : 'true');
 }
 
-async function mostrarLoadingYEsperarPintado() {
-  setAppLoadingVisible(true);
+async function mostrarLoadingYEsperarPintado(mensaje) {
+  setAppLoadingVisible(true, mensaje || 'Cargando pedidos, por favor espera...');
   // Dos frames: permite que el overlay se pinte antes del trabajo pesado (crear tarjetas).
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function nombreMensajeroPorId(userId) {
+  if (userId == null || userId === '') return '';
+  const m = listaMensajerosCache.find((x) => String(x.id) === String(userId));
+  return m && m.username ? String(m.username) : '';
 }
 
 async function syncPedidosAlServidor() {
@@ -2611,6 +2622,15 @@ async function asignarPedidoDesdeSelect(selectEl) {
   const prev = selectEl.getAttribute('data-prev-value') || '';
   const userId = raw === '' ? null : Number(raw);
   if (raw !== '' && !Number.isFinite(userId)) return;
+  const nombreMensajero = nombreMensajeroPorId(userId);
+  const mensajeCarga =
+    userId == null
+      ? 'Quitando la asignación del pedido…'
+      : nombreMensajero
+        ? `Asignando el pedido al mensajero ${nombreMensajero}…`
+        : 'Asignando el pedido al mensajero…';
+  selectEl.disabled = true;
+  await mostrarLoadingYEsperarPintado(mensajeCarga);
   try {
     await apiJson(`/api/orders/${pedidoId}/assign`, {
       method: 'PATCH',
@@ -2624,6 +2644,11 @@ async function asignarPedidoDesdeSelect(selectEl) {
   } catch (e) {
     mostrarToast(String(e.message || e), 'error');
     selectEl.value = prev || '';
+  } finally {
+    setAppLoadingVisible(false);
+    try {
+      selectEl.disabled = false;
+    } catch (_e) {}
   }
 }
 
@@ -2640,6 +2665,14 @@ async function asignarActivosBulkDesdeBarra() {
     mostrarToast('No hay pedidos activos para asignar.', 'info');
     return;
   }
+  const nombreMensajero = nombreMensajeroPorId(uid);
+  const mensajeCarga = nombreMensajero
+    ? `Asignando ${orderIds.length} pedido(s) al mensajero ${nombreMensajero}…`
+    : `Asignando ${orderIds.length} pedido(s) al mensajero…`;
+  const bulkBtn = document.getElementById('bulkAssignBtn');
+  sel.disabled = true;
+  if (bulkBtn) bulkBtn.disabled = true;
+  await mostrarLoadingYEsperarPintado(mensajeCarga);
   try {
     await apiJson('/api/orders/assign-bulk', {
       method: 'POST',
@@ -2651,6 +2684,10 @@ async function asignarActivosBulkDesdeBarra() {
     mostrarToast(`${orderIds.length} pedido(s) asignado(s).`, 'success');
   } catch (e) {
     mostrarToast(String(e.message || e), 'error');
+  } finally {
+    setAppLoadingVisible(false);
+    sel.disabled = false;
+    if (bulkBtn) bulkBtn.disabled = false;
   }
 }
 
