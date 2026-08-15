@@ -2813,7 +2813,7 @@ function crearTarjetaPedido(pedido, index) {
   } else if (etapaActual === 'enDestino') {
     btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnRuta(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en ruta</button>`;
   } else if (etapaActual === 'finalizado') {
-    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnDestino(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en destino</button>`;
+    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnRuta(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en ruta</button>`;
   }
   const btnReactivarCanceladoHtml =
     adminUi && pedido.cancelado
@@ -3506,39 +3506,47 @@ function marcarPendiente(index) {
     pedidos.splice(destino, 0, movido);
   }
 
+  vistaPedidosSeleccionadaManual = true;
+  vistaPedidosActual = 'pendientes';
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
+  mostrarToast(`Pedido #${pedido.id} regresó a pendientes.`, 'info');
 }
 
 function marcarRegresarAEnRuta(index) {
   const pedido = pedidos[index];
-  if (!pedido || pedido.entregado || pedido.cancelado || !pedido.enCurso || !pedido.llegoDestino) return;
+  if (!pedido || pedido.cancelado) return;
+
+  // Desde finalizado → en ruta
+  if (pedido.entregado) {
+    pedido.entregado = false;
+    pedido.noEntregado = false;
+    pedido.envioRecogido = false;
+    pedido.enCurso = true;
+    pedido.llegoDestino = false;
+    pedido.haSidoEnrutado = true;
+    pedido.metodoPagoEntrega = '';
+    pedido.montoNequi = 0;
+    pedido.montoDaviplata = 0;
+    pedido.montoEfectivo = 0;
+    limpiarEntregaPorteriaEnPedido(pedido);
+    vistaPedidosSeleccionadaManual = true;
+    vistaPedidosActual = 'enCurso';
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+    mostrarToast(`Pedido #${pedido.id} regresó a en ruta.`, 'info');
+    return;
+  }
+
+  // Desde en destino → en ruta
+  if (!pedido.enCurso || !pedido.llegoDestino) return;
   pedido.llegoDestino = false;
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
-}
-
-function marcarRegresarAEnDestino(index) {
-  const pedido = pedidos[index];
-  if (!pedido || !pedido.entregado || pedido.cancelado) return;
-  pedido.entregado = false;
-  pedido.noEntregado = false;
-  pedido.envioRecogido = false;
-  pedido.enCurso = true;
-  pedido.llegoDestino = true;
-  pedido.metodoPagoEntrega = '';
-  pedido.montoNequi = 0;
-  pedido.montoDaviplata = 0;
-  pedido.montoEfectivo = 0;
-  limpiarEntregaPorteriaEnPedido(pedido);
-  vistaPedidosSeleccionadaManual = true;
-  vistaPedidosActual = 'enCurso';
-  guardarPedidos();
-  renderPedidos();
-  actualizarMarcadores();
-  mostrarToast(`Pedido #${pedido.id} regresó a en destino.`, 'info');
+  mostrarToast(`Pedido #${pedido.id} regresó a en ruta.`, 'info');
 }
 
 function marcarNoEntregado(index) {
