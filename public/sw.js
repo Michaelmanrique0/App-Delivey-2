@@ -1,103 +1,105 @@
-/* Service Worker — app delivery (modo sin internet) */
-const CACHE_NAME = 'delivery-app-shell-v2';
-
-const SHELL_ASSETS = [
+/* Service Worker — Delivery (modo offline + updates suaves) */
+const CACHE_NAME = 'delivery-static-v3';
+const PRECACHE = [
   './',
   './index.html',
-  './app.js',
   './style.css',
+  './app.js',
   './manifest.webmanifest',
   './icon.svg',
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css',
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => cache.addAll(SHELL_ASSETS))
-      .then(() => self.skipWaiting())
-      .catch((err) => {
-        console.warn('[sw] install cache parcial:', err);
-        return self.skipWaiting();
-      })
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)).catch(() => undefined)
   );
+  // No skipWaiting: el SW nuevo espera a que se cierre/recargue la pestaña.
+  // Así se evita congelar la app a mitad de uso al desplegar una versión.
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-      )
-      .then(() => self.clients.claim())
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
   );
+  // No clients.claim(): no tomar control de pestañas abiertas a la fuerza.
 });
 
-function esPeticionApi(url) {
-  return url.pathname.startsWith('/api/');
-}
-
-function esNavegacion(request) {
-  return request.mode === 'navigate' || (request.headers.get('accept') || '').includes('text/html');
-}
+self.addEventListener('message', (event) => {
+  if (event && event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
 
-  let url;
-  try {
-    url = new URL(req.url);
-  } catch (_e) {
+  const url = new URL(req.url);
+  const sameOrigin = url.origin === self.location.origin;
+
+  // API: no cachear (offline se resuelve con localStorage en la app)
+  if (sameOrigin && url.pathname.startsWith('/api/')) return;
+
+  // CDN: cache-first
+  if (!sameOrigin) {
+    event.respondWith(
+      caches.match(req).then((cached) => {
+        if (cached) return cached;
+        return fetch(req)
+          .then((res) => {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => undefined);
+            return res;
+          })
+          .catch(() => cached);
+      })
+    );
     return;
   }
 
-  // API: siempre red (los pedidos se guardan en localStorage desde la app).
-  if (esPeticionApi(url)) return;
+  // App shell (HTML/JS/CSS): network-first para no servir JS viejo mezclado
+  // y evitar pantallas congeladas tras un deploy.
+  const isAppShell =
+    req.mode === 'navigate' ||
+    url.pathname.endsWith('/') ||
+    url.pathname.endsWith('.html') ||
+    url.pathname.endsWith('.js') ||
+    url.pathname.endsWith('.css') ||
+    url.pathname.endsWith('.webmanifest');
 
-  // Navegación / documento: red primero, fallback a cache (index).
-  if (esNavegacion(req)) {
+  if (isAppShell) {
     event.respondWith(
       fetch(req)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE_NAME).then((c) => c.put('./index.html', copy)).catch(() => {});
+          caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => undefined);
           return res;
         })
         .catch(async () => {
-          const cached =
-            (await caches.match('./index.html')) ||
-            (await caches.match('index.html')) ||
-            (await caches.match('./'));
-          return (
-            cached ||
-            new Response('<h1>Sin conexión</h1><p>Abre la app una vez con internet para guardarla.</p>', {
-              status: 503,
-              headers: { 'Content-Type': 'text/html; charset=utf-8' },
-            })
-          );
+          const cached = await caches.match(req);
+          if (cached) return cached;
+          if (req.mode === 'navigate') {
+            const fallback = await caches.match('./index.html');
+            if (fallback) return fallback;
+          }
+          return Response.error();
         })
     );
     return;
   }
 
-  // Estáticos y CDN: cache primero, luego red y actualiza cache.
   event.respondWith(
     caches.match(req).then((cached) => {
-      const network = fetch(req)
+      if (cached) return cached;
+      return fetch(req)
         .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => {});
-          }
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => undefined);
           return res;
         })
         .catch(() => cached);
-      return cached || network;
     })
   );
 });

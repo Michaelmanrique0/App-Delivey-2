@@ -85,6 +85,47 @@ function cargarSesionUsuarioCache() {
   }
 }
 
+/** Usuario mínimo desde el JWT local (sin validar firma). Solo para no perder la sesión si /api/me falla. */
+function leerUsuarioBasicoDesdeToken(token) {
+  try {
+    const part = String(token || '').split('.')[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const json = JSON.parse(atob(b64));
+    const id = json.sub != null ? json.sub : json.id;
+    if (id == null) return null;
+    return {
+      id,
+      username: json.username || 'Usuario',
+      email: json.email || '',
+      role: json.role === 'admin' ? 'admin' : 'mensajero',
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+
+/** Restaura sesión local sin borrar el token. El cierre solo ocurre con el botón Salir. */
+async function entrarConSesionLocalSiHayToken(token) {
+  if (!token) return false;
+  const cachedUser = cargarSesionUsuarioCache();
+  const cachedUid = getAuthUserId() || (cachedUser ? String(cachedUser.id) : '');
+  if (cachedUser && cachedUid && String(cachedUser.id) === cachedUid) {
+    await entrarAppConSesion(cachedUser);
+    return true;
+  }
+  const fromJwt = leerUsuarioBasicoDesdeToken(token);
+  if (fromJwt) {
+    if (cachedUser && String(cachedUser.id) === String(fromJwt.id)) {
+      await entrarAppConSesion({ ...fromJwt, ...cachedUser });
+    } else {
+      await entrarAppConSesion(fromJwt);
+    }
+    return true;
+  }
+  return false;
+}
+
 function actualizarBannerOffline() {
   const banner = document.getElementById('bannerOffline');
   if (!banner) return;
@@ -326,7 +367,24 @@ function lineasProductosDesdeArray(arr) {
   if (!Array.isArray(arr) || arr.length === 0) return [];
   return arr
     .map((p) => String(p || '').trim())
-    .filter((p) => p.length > 0 && !/^cambio\.?$/i.test(p));
+    .filter((p) => p.length > 0 && !/^cambio\.?$/i.test(p) && !esLineaPlantillaPedidoNoProducto(p));
+}
+
+/** Textos del formato de chat (¿Todo en orden?, envío, etc.) — nunca son productos. */
+function esLineaPlantillaPedidoNoProducto(linea) {
+  const L = String(linea || '')
+    .trim()
+    .replace(/^[*_~`•\u2022\-]+\s*/, '')
+    .replace(/\s*[*_~`]+$/g, '')
+    .trim();
+  if (!L) return true;
+  if (/^https?:/i.test(L)) return true;
+  if (/^¿?\s*Todo\s+en\s+orden\b/i.test(L)) return true;
+  if (/^Para\s+agilizar\b/i.test(L)) return true;
+  if (/^Env[ií]o\b/i.test(L)) return true;
+  if (/^Horario\b/i.test(L)) return true;
+  if (/^\d+\s*:\s*$/.test(L) || /^\d+\s*:\s*Para\b/i.test(L)) return true;
+  return false;
 }
 
 function lineasProductosPedidoNormalizadas(pedido) {
@@ -1603,7 +1661,7 @@ function normalizarTextoParaExtraerPedido(s) {
 const _RE_TONO_PIEL = '(?:\\u{1F3FB}|\\u{1F3FC}|\\u{1F3FD}|\\u{1F3FE}|\\u{1F3FF})?';
 const _RE_EMOJI_NOMBRE = `🙋${_RE_TONO_PIEL}`;
 const _RE_FIN_CAMPO_PEDIDO =
-  `(?=${_RE_EMOJI_NOMBRE}|📲|💰|Nombre\\b|Tel[ée]fono|Celular|WhatsApp|M[oó]vil\\b|Producto\\b|Pedido\\b|¿Todo|Para agilizar|Env[ií]o|https?:|$)`;
+  `(?=${_RE_EMOJI_NOMBRE}|📲|💰|Nombre\\b|Tel[ée]fono|Celular|WhatsApp|M[oó]vil\\b|Producto\\b|Pedido\\b|(?:\\*|\\s)*¿?\\s*Todo\\s+en\\s+orden|Para agilizar|Env[ií]o|https?:|$)`;
 
 /** Tras "Nombre:" puede venir dirección antes que teléfono; sin 📍/Dirección el capture se come ese bloque. */
 const _RE_FIN_TRAS_NOMBRE = _RE_FIN_CAMPO_PEDIDO.replace(
@@ -1616,11 +1674,7 @@ function extraerProductosLineasTrasEncabezado(b) {
   const esCorte = (raw) => {
     const L = raw.trim();
     if (!L) return false;
-    if (/^https?:/i.test(L)) return true;
-    if (/^¿Todo en orden/i.test(L)) return true;
-    if (/^Para agilizar\b/i.test(L)) return true;
-    if (/^Env[ií]o\b/i.test(L)) return true;
-    if (/^\d+\s*:\s*$/.test(L) || /^\d+\s*:\s*Para\b/i.test(L)) return true;
+    if (esLineaPlantillaPedidoNoProducto(L)) return true;
     if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
     if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|Valor|Total)\b/i.test(L) && /:\s*\S/.test(L)) return true;
     return false;
@@ -1637,7 +1691,7 @@ function extraerProductosLineasTrasEncabezado(b) {
       if (!L) continue;
       L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
       L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
-      if (L) out.push(L);
+      if (L && !esLineaPlantillaPedidoNoProducto(L)) out.push(L);
     }
     if (out.length) return out;
   }
@@ -1785,8 +1839,9 @@ function extraerCamposPedido(bloque) {
   }
 
   let productos = [];
+  // Corta antes de la pregunta del formato (con o sin ¿, negrita *...*, emoji).
   const prodFin =
-    '(?=¿Todo en orden|Para agilizar|Env[ií]o|Horario|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
+    '(?=(?:\\*|\\s)*¿?\\s*Todo\\s+en\\s+orden|Para agilizar|Env[ií]o|Horario|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
   const prodPatrones = [
     new RegExp(`Producto\\s*🎁[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
     new RegExp(`Producto\\s*🎯[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
@@ -1801,7 +1856,7 @@ function extraerCamposPedido(bloque) {
         .trim()
         .split('\n')
         .map((l) => l.trim())
-        .filter((l) => l && !/^https?:/i.test(l));
+        .filter((l) => l && !esLineaPlantillaPedidoNoProducto(l));
       if (productos.length) break;
     }
   }
@@ -7608,27 +7663,18 @@ async function iniciarFlujoAuth() {
   const enVistaResetUrl = !!params.get('reset');
   const token = getAuthToken();
 
-  /* Con sesión guardada: validar antes de mostrar login (evita parpadeo al recargar). */
+  /* Con sesión guardada: validar antes de mostrar login (evita parpadeo al recargar).
+     Nunca borrar el token aquí: la sesión solo se cierra con el botón Salir. */
   if (token && !enVistaResetUrl) {
     try {
       const me = await apiJson('/api/me', { method: 'GET' });
       migrarTokenLegacySiHaceFalta(me.user.id);
-      const storedUid = getAuthUserId();
-      if (storedUid && String(me.user.id) !== storedUid) {
-        setAuthToken('');
-        guardarSesionUsuarioCache(null);
-        limpiarVistaAppSesion();
-        quitarEstiloPreRestoreUsuariosRoles();
-      } else {
-        setAuthToken(token, me.user.id);
-        await entrarAppConSesion(me.user);
-        return;
-      }
+      setAuthToken(token, me.user.id);
+      await entrarAppConSesion(me.user);
+      return;
     } catch (_e) {
-      const cachedUser = cargarSesionUsuarioCache();
-      const cachedUid = getAuthUserId() || (cachedUser ? String(cachedUser.id) : '');
-      if (token && cachedUser && cachedUid && String(cachedUser.id) === cachedUid) {
-        await entrarAppConSesion(cachedUser);
+      const entroLocal = await entrarConSesionLocalSiHayToken(token);
+      if (entroLocal) {
         mostrarToast(
           appEstaOnline()
             ? 'No se pudo validar la sesión en el servidor. Usando datos guardados.'
@@ -7638,10 +7684,7 @@ async function iniciarFlujoAuth() {
         );
         return;
       }
-      setAuthToken('');
-      guardarSesionUsuarioCache(null);
-      limpiarVistaAppSesion();
-      quitarEstiloPreRestoreUsuariosRoles();
+      /* Token presente pero ilegible: no limpiar; mostrar login y reintentar luego. */
     }
   }
 
@@ -7730,6 +7773,7 @@ function sincronizarSesionDesdeOtraPestana() {
   if (!sesionUsuario) return;
   const token = getAuthToken();
   if (!token) {
+    /* Solo si otra pestaña cerró sesión con el botón Salir (token borrado). */
     cerrarSesionApp();
     return;
   }
@@ -7745,8 +7789,7 @@ function sincronizarSesionDesdeOtraPestana() {
         8000
       );
     } catch (_e) {
-      setAuthToken('');
-      window.location.reload();
+      /* Fallo de red/API: mantener la sesión actual; no cerrar ni recargar. */
     }
   })();
 }

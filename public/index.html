@@ -375,11 +375,29 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260814offline"></script>
+<script src="app.js?v=20260815productos"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw.js').catch(function (err) {
+    navigator.serviceWorker.register('./sw.js').then(function (reg) {
+      // Si hay un SW nuevo esperando, avisar sin forzar recarga (evita congelar la app).
+      function avisarUpdate() {
+        if (!reg.waiting) return;
+        try {
+          if (typeof mostrarToast === 'function') {
+            mostrarToast('Hay una versión nueva. Recarga cuando puedas para actualizar.', 'info', 12000);
+          }
+        } catch (_e) {}
+      }
+      if (reg.waiting) avisarUpdate();
+      reg.addEventListener('updatefound', function () {
+        var nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', function () {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) avisarUpdate();
+        });
+      });
+    }).catch(function (err) {
       console.warn('[sw] No se pudo registrar:', err);
     });
   });
