@@ -37,6 +37,11 @@ const {
   setUserPaymentSettings,
   resolveEffectivePaymentConfig,
 } = require('./paymentConfig');
+const {
+  setPuedeModificarValor,
+  enrichUserPublic,
+  enrichUsersList,
+} = require('./userPerms');
 
 const PORT = Number(process.env.PORT || 3847);
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-delivery-cambia-esto-en-produccion';
@@ -112,7 +117,7 @@ async function authMiddleware(req, res, next) {
       res.status(401).json({ error: 'Usuario no válido' });
       return;
     }
-    req.user = user;
+    req.user = await enrichUserPublic(user);
     next();
   } catch (_e) {
     res.status(401).json({ error: 'Sesión inválida o expirada' });
@@ -273,11 +278,17 @@ app.post(
       return;
     }
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
-    const user = await createUser(username, email, hash, role);
+    const user = await enrichUserPublic(await createUser(username, email, hash, role));
     const token = signToken(user);
     res.status(201).json({
       token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role },
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        puedeModificarValor: !!user.puedeModificarValor,
+      },
     });
   })
 );
@@ -370,11 +381,17 @@ app.post(
       res.status(401).json({ error: 'Correo o contraseña incorrectos' });
       return;
     }
-    const user = await getUserById(row.id);
+    const user = await enrichUserPublic(await getUserById(row.id));
     const token = signToken(user);
     res.json({
       token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role },
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        puedeModificarValor: !!user.puedeModificarValor,
+      },
     });
   })
 );
@@ -471,7 +488,7 @@ app.put(
 // --- Users (admin) ---
 
 app.get('/api/users', asyncHandler(authMiddleware), requireAdmin, asyncHandler(async (_req, res) => {
-  res.json({ users: await listUsers() });
+  res.json({ users: await enrichUsersList(await listUsers()) });
 }));
 
 app.post(
@@ -504,7 +521,7 @@ app.post(
       return;
     }
     const hash = await bcrypt.hash(password, SALT_ROUNDS);
-    const user = await createUser(username, email, hash, role);
+    const user = await enrichUserPublic(await createUser(username, email, hash, role));
     res.status(201).json({ user });
   })
 );
@@ -545,22 +562,46 @@ app.patch(
       res.status(400).json({ error: 'Id inválido' });
       return;
     }
-    if (id === req.user.id) {
-      res.status(400).json({ error: 'No puedes cambiar tu propio rol desde aquí' });
-      return;
-    }
-    const role = String(req.body?.role || '');
-    if (!['admin', 'mensajero'].includes(role)) {
-      res.status(400).json({ error: 'Rol inválido' });
-      return;
-    }
     const target = await getUserById(id);
     if (!target) {
       res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
-    await updateUserRole(id, role);
-    res.json({ user: await getUserById(id) });
+
+    const tieneRole = Object.prototype.hasOwnProperty.call(req.body || {}, 'role');
+    const tienePermValor = Object.prototype.hasOwnProperty.call(req.body || {}, 'puedeModificarValor');
+    if (!tieneRole && !tienePermValor) {
+      res.status(400).json({ error: 'Indica role y/o puedeModificarValor' });
+      return;
+    }
+
+    if (tieneRole) {
+      if (id === req.user.id) {
+        res.status(400).json({ error: 'No puedes cambiar tu propio rol desde aquí' });
+        return;
+      }
+      const role = String(req.body?.role || '');
+      if (!['admin', 'mensajero'].includes(role)) {
+        res.status(400).json({ error: 'Rol inválido' });
+        return;
+      }
+      await updateUserRole(id, role);
+      if (role !== 'mensajero') {
+        await setPuedeModificarValor(id, false);
+      }
+    }
+
+    if (tienePermValor) {
+      const actualizado = await getUserById(id);
+      const roleFinal = actualizado ? actualizado.role : target.role;
+      if (roleFinal !== 'mensajero') {
+        await setPuedeModificarValor(id, false);
+      } else {
+        await setPuedeModificarValor(id, !!req.body.puedeModificarValor);
+      }
+    }
+
+    res.json({ user: await enrichUserPublic(await getUserById(id)) });
   })
 );
 

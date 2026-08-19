@@ -51,6 +51,11 @@ function esSesionMensajero() {
   return !!sesionUsuario && sesionUsuario.role === 'mensajero';
 }
 
+/** Mensajero autorizado por admin a revisar/editar el valor del pedido. */
+function mensajeroPuedeModificarValorPedido() {
+  return esSesionMensajero() && !!sesionUsuario?.puedeModificarValor;
+}
+
 function appEstaOnline() {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
@@ -68,6 +73,7 @@ function guardarSesionUsuarioCache(user) {
         username: user.username,
         email: user.email,
         role: user.role,
+        puedeModificarValor: !!user.puedeModificarValor,
       })
     );
   } catch (_e) {}
@@ -2873,7 +2879,7 @@ function crearTarjetaPedido(pedido, index) {
       <button class="btn-copy-inline" onclick="copiarDireccionPedido(${index})" title="Copiar dirección">
         <i class="fa-regular fa-copy"></i> Copiar
       </button><br>
-      <strong class="pedido-etiqueta-productos">Productos:</strong><div class="pedido-productos-lista">${htmlProductosPedidoMultilinea(pedido)}</div><div class="pedido-fila-valor"><strong>Valor:</strong> $${valorFormato}</div>
+      <strong class="pedido-etiqueta-productos">Productos:</strong><div class="pedido-productos-lista">${htmlProductosPedidoMultilinea(pedido)}</div><div class="pedido-fila-valor"><strong>Valor:</strong> $${valorFormato}${pedido.valorModificado ? ' <span class="pedido-valor-modificado">(modificado)</span>' : ''}</div>
     </div>
     ${
       adminUi
@@ -3530,6 +3536,9 @@ function marcarRegresarAEnRuta(index) {
     pedido.montoNequi = 0;
     pedido.montoDaviplata = 0;
     pedido.montoEfectivo = 0;
+    pedido.dioCambio = false;
+    pedido.cambioMetodo = '';
+    pedido.montoCambio = 0;
     limpiarEntregaPorteriaEnPedido(pedido);
     vistaPedidosSeleccionadaManual = true;
     vistaPedidosActual = 'enCurso';
@@ -4257,7 +4266,9 @@ let pagoEntregadoPendiente = {
   pedidoId: null,
   enviarWhatsAppAdmin: true,
   lugarEntrega: null, // 'cliente' | 'porteria'
-  recibidoPor: ''
+  recibidoPor: '',
+  datosPagoPendientes: null,
+  cambioMetodo: '',
 };
 
 /** Evita repetir el modal automático de portería al cliente en el mismo regreso. */
@@ -4323,9 +4334,13 @@ function mostrarPasoModalPagoEntregado(paso) {
   const contLugar = document.getElementById('pasoLugarEntrega');
   const contPago = document.getElementById('pasoMetodoPago');
   const contPorteria = document.getElementById('pasoPorteriaNombre');
+  const contCambio = document.getElementById('pasoCambioPregunta');
+  const contCambioDet = document.getElementById('pasoCambioDetalle');
   if (contLugar) contLugar.style.display = paso === 'lugar' ? 'block' : 'none';
   if (contPago) contPago.style.display = paso === 'pago' ? 'block' : 'none';
   if (contPorteria) contPorteria.style.display = paso === 'porteria' ? 'block' : 'none';
+  if (contCambio) contCambio.style.display = paso === 'cambio' ? 'block' : 'none';
+  if (contCambioDet) contCambioDet.style.display = paso === 'cambioDetalle' ? 'block' : 'none';
 }
 
 function seleccionarLugarEntregaEntregado(lugar) {
@@ -4354,6 +4369,10 @@ function confirmarNombrePorteriaEntregado() {
 
 function asegurarModalPagoEntregado() {
   let modal = document.getElementById('modalPagoEntregado');
+  if (modal && !document.getElementById('pasoCambioPregunta')) {
+    modal.remove();
+    modal = null;
+  }
   if (modal) return modal;
 
   const ocultarNequi = esSesionAdmin();
@@ -4361,6 +4380,9 @@ function asegurarModalPagoEntregado() {
   const btnNequiMixto = ocultarNequi
     ? ''
     : `<button class="btn-success" onclick="seleccionarMetodoPagoEntregado('nequi_efectivo')">Nequi + Efectivo</button>`;
+  const btnCambioNequi = ocultarNequi
+    ? ''
+    : `<button type="button" class="btn-success" onclick="seleccionarMedioCambioEntrega('nequi')">Nequi</button>`;
 
   modal = document.createElement('div');
   modal.id = 'modalPagoEntregado';
@@ -4408,11 +4430,37 @@ function asegurarModalPagoEntregado() {
           <button class="btn-warning" onclick="mostrarPasoModalPagoEntregado('lugar')">Atrás</button>
         </div>
       </div>
+
+      <div id="pasoCambioPregunta" style="display:none;">
+        <p>¿Se dio cambio al cliente?</p>
+        <div class="modal-no-entregado-actions">
+          <button type="button" class="btn-success" onclick="responderDioCambioEntrega(true)">Sí, se dio cambio</button>
+          <button type="button" class="btn-info" onclick="responderDioCambioEntrega(false)">No se dio cambio</button>
+          <button type="button" class="btn-warning" onclick="volverAMetodoPagoDesdeCambio()">Atrás</button>
+        </div>
+      </div>
+
+      <div id="pasoCambioDetalle" style="display:none;">
+        <p>¿Cómo se entregó el cambio?</p>
+        <div class="modal-no-entregado-actions" id="mediosCambioEntregaBtns">
+          <button type="button" class="btn-info" onclick="seleccionarMedioCambioEntrega('efectivo')">Efectivo</button>
+          ${btnCambioNequi}
+          <button type="button" class="btn-route" onclick="seleccionarMedioCambioEntrega('daviplata')">Daviplata</button>
+        </div>
+        <p id="medioCambioSeleccionadoTxt" class="modal-editar-pedido-ayuda" style="margin-top:10px;"></p>
+        <label class="modal-editar-pedido-label" for="montoCambioEntrega">¿De cuánto fue el cambio?</label>
+        <input id="montoCambioEntrega" type="text" inputmode="numeric" placeholder="Ej: 5.000" style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; margin-bottom:8px;">
+        <div class="modal-no-entregado-actions">
+          <button type="button" class="btn-primary" onclick="confirmarCambioEntrega()">Confirmar cambio</button>
+          <button type="button" class="btn-warning" onclick="mostrarPasoModalPagoEntregado('cambio')">Atrás</button>
+        </div>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
   vincularFormateoMilesInput(document.getElementById('montoDigitalPago'));
   vincularFormateoMilesInput(document.getElementById('montoEfectivoPago'));
+  vincularFormateoMilesInput(document.getElementById('montoCambioEntrega'));
   return modal;
 }
 
@@ -4424,9 +4472,17 @@ function cerrarModalPagoEntregado() {
   const contenedorMontos = document.getElementById('montosMixtosPago');
   const inputDigital = document.getElementById('montoDigitalPago');
   const inputEfectivo = document.getElementById('montoEfectivoPago');
+  const inputCambio = document.getElementById('montoCambioEntrega');
+  const txtMedio = document.getElementById('medioCambioSeleccionadoTxt');
   if (contenedorMontos) contenedorMontos.style.display = 'none';
   if (inputDigital) inputDigital.value = '';
   if (inputEfectivo) inputEfectivo.value = '';
+  if (inputCambio) inputCambio.value = '';
+  if (txtMedio) txtMedio.textContent = '';
+  if (pagoEntregadoPendiente) {
+    pagoEntregadoPendiente.datosPagoPendientes = null;
+    pagoEntregadoPendiente.cambioMetodo = '';
+  }
 }
 
 function textoMetodoPagoEntregaPedido(pedido) {
@@ -4465,11 +4521,41 @@ function construirMensajeEntregaRegistrada(pedido) {
     pedido.lugarEntregaFinal === 'porteria' && recibidoPor
       ? `Entregado en portería. Recibe: ${recibidoPor}`
       : '';
+  const lineaValor =
+    pedido.valorModificado
+      ? `Valor modificado: sí${
+          pedido.valorOriginal != null && String(pedido.valorOriginal).trim() !== ''
+            ? ` (antes $${Number(String(pedido.valorOriginal).replace(/\D/g, '') || 0).toLocaleString('es-CO')} → ahora $${Number(String(pedido.valor || 0).replace(/\D/g, '') || 0).toLocaleString('es-CO')})`
+            : ''
+        }`
+      : 'Valor modificado: no';
+  const lineaCambio = textoLineaCambioEntregaPedido(pedido);
   return `Pedido #${pedidoId} entregado${detalleEntrega ? `\n${detalleEntrega}` : ''}
 Monto recibido: ${detalleMonto}
+${lineaValor}
+${lineaCambio}
 Producto(s) entregado(s):
 ${productosEntregados}
 Método de pago: ${metodoPagoTexto}`;
+}
+
+function textoMedioCambioEntrega(medio) {
+  if (medio === 'nequi') return 'Nequi';
+  if (medio === 'daviplata') return 'Daviplata';
+  if (medio === 'efectivo') return 'Efectivo';
+  return 'No especificado';
+}
+
+function textoLineaCambioEntregaPedido(pedido) {
+  if (!pedido) return 'Cambio entregado: no';
+  const metodo = String(pedido.metodoPagoEntrega || '');
+  if (metodo === 'pagado_tienda' || metodo === 'es_cambio') {
+    return 'Cambio entregado: no aplica';
+  }
+  if (!pedido.dioCambio) return 'Cambio entregado: no';
+  const monto = Number(pedido.montoCambio || 0);
+  const medio = textoMedioCambioEntrega(pedido.cambioMetodo);
+  return `Cambio entregado: sí (${medio}: $${monto.toLocaleString('es-CO')})`;
 }
 
 function pieMensajeClientePorteria() {
@@ -4879,7 +4965,9 @@ function fotoEntregado(index, pedidoId) {
     pedidoId,
     enviarWhatsAppAdmin: true,
     lugarEntrega: null,
-    recibidoPor: ''
+    recibidoPor: '',
+    datosPagoPendientes: null,
+    cambioMetodo: '',
   };
   const modal = asegurarModalPagoEntregado();
   mostrarPasoModalPagoEntregado('lugar');
@@ -4898,6 +4986,9 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   pedido.montoNequi = Number(datosPago.montoNequi || 0);
   pedido.montoDaviplata = Number(datosPago.montoDaviplata || 0);
   pedido.montoEfectivo = Number(datosPago.montoEfectivo || 0);
+  pedido.dioCambio = !!datosPago.dioCambio;
+  pedido.cambioMetodo = datosPago.dioCambio ? String(datosPago.cambioMetodo || '') : '';
+  pedido.montoCambio = datosPago.dioCambio ? Number(datosPago.montoCambio || 0) : 0;
 
   const esPorteria =
     pagoEntregadoPendiente &&
@@ -4918,7 +5009,9 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
       pedidoId: null,
       enviarWhatsAppAdmin: true,
       lugarEntrega: null,
-      recibidoPor: ''
+      recibidoPor: '',
+      datosPagoPendientes: null,
+      cambioMetodo: '',
     };
     marcarEntregado(indexFinal);
     iniciarFlujoPostCierrePedido({
@@ -4943,10 +5036,106 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
     pedidoId: null,
     enviarWhatsAppAdmin: true,
     lugarEntrega: null,
-    recibidoPor: ''
+    recibidoPor: '',
+    datosPagoPendientes: null,
+    cambioMetodo: '',
   };
   marcarEntregado(indexFinal);
   notificarSiguientePedido(pedidoId);
+}
+
+/** Tras elegir método de pago: preguntar por cambio (salvo casos que no aplican). */
+function continuarTrasElegirMetodoPago(indexFinal, pedidoId, datosPago) {
+  const metodo = String(datosPago?.metodo || '');
+  if (metodo === 'pagado_tienda' || metodo === 'es_cambio') {
+    cerrarModalPagoEntregado();
+    registrarEntregaConPago(indexFinal, pedidoId, {
+      ...datosPago,
+      dioCambio: false,
+      cambioMetodo: '',
+      montoCambio: 0,
+    });
+    return;
+  }
+  pagoEntregadoPendiente.datosPagoPendientes = { ...datosPago };
+  pagoEntregadoPendiente.cambioMetodo = '';
+  const contenedorMontos = document.getElementById('montosMixtosPago');
+  if (contenedorMontos) contenedorMontos.style.display = 'none';
+  const inputCambio = document.getElementById('montoCambioEntrega');
+  const txtMedio = document.getElementById('medioCambioSeleccionadoTxt');
+  if (inputCambio) inputCambio.value = '';
+  if (txtMedio) txtMedio.textContent = '';
+  mostrarPasoModalPagoEntregado('cambio');
+}
+
+function volverAMetodoPagoDesdeCambio() {
+  pagoEntregadoPendiente.datosPagoPendientes = null;
+  pagoEntregadoPendiente.cambioMetodo = '';
+  mostrarPasoModalPagoEntregado('pago');
+}
+
+function responderDioCambioEntrega(dioCambio) {
+  const base = pagoEntregadoPendiente.datosPagoPendientes;
+  if (!base) {
+    mostrarToast('Selecciona primero el método de pago.', 'warning');
+    mostrarPasoModalPagoEntregado('pago');
+    return;
+  }
+  const { index, pedidoId } = pagoEntregadoPendiente;
+  if (!dioCambio) {
+    cerrarModalPagoEntregado();
+    registrarEntregaConPago(index, pedidoId, {
+      ...base,
+      dioCambio: false,
+      cambioMetodo: '',
+      montoCambio: 0,
+    });
+    return;
+  }
+  pagoEntregadoPendiente.cambioMetodo = '';
+  const txtMedio = document.getElementById('medioCambioSeleccionadoTxt');
+  const inputCambio = document.getElementById('montoCambioEntrega');
+  if (txtMedio) txtMedio.textContent = 'Elige cómo se entregó el cambio.';
+  if (inputCambio) inputCambio.value = '';
+  mostrarPasoModalPagoEntregado('cambioDetalle');
+}
+
+function seleccionarMedioCambioEntrega(medio) {
+  const m = String(medio || '');
+  if (!['efectivo', 'nequi', 'daviplata'].includes(m)) return;
+  pagoEntregadoPendiente.cambioMetodo = m;
+  const txtMedio = document.getElementById('medioCambioSeleccionadoTxt');
+  if (txtMedio) txtMedio.textContent = `Medio seleccionado: ${textoMedioCambioEntrega(m)}`;
+  const inputCambio = document.getElementById('montoCambioEntrega');
+  if (inputCambio) setTimeout(() => inputCambio.focus(), 40);
+}
+
+function confirmarCambioEntrega() {
+  const base = pagoEntregadoPendiente.datosPagoPendientes;
+  if (!base) {
+    mostrarToast('Selecciona primero el método de pago.', 'warning');
+    mostrarPasoModalPagoEntregado('pago');
+    return;
+  }
+  const medio = String(pagoEntregadoPendiente.cambioMetodo || '');
+  if (!['efectivo', 'nequi', 'daviplata'].includes(medio)) {
+    mostrarToast('Elige si el cambio fue en efectivo, Nequi o Daviplata.', 'warning');
+    return;
+  }
+  const inputCambio = document.getElementById('montoCambioEntrega');
+  const monto = parseMontoEntero(inputCambio?.value);
+  if (monto <= 0) {
+    mostrarToast('Indica de cuánto fue el cambio.', 'warning');
+    return;
+  }
+  const { index, pedidoId } = pagoEntregadoPendiente;
+  cerrarModalPagoEntregado();
+  registrarEntregaConPago(index, pedidoId, {
+    ...base,
+    dioCambio: true,
+    cambioMetodo: medio,
+    montoCambio: monto,
+  });
 }
 
 function seleccionarMetodoPagoEntregado(metodo) {
@@ -4979,8 +5168,7 @@ function seleccionarMetodoPagoEntregado(metodo) {
     montoDaviplata: metodo === 'daviplata' ? totalPedido : 0,
     montoEfectivo: metodo === 'efectivo' ? totalPedido : 0
   };
-  cerrarModalPagoEntregado();
-  registrarEntregaConPago(indexFinal, pedidoId, datosPago);
+  continuarTrasElegirMetodoPago(indexFinal, pedidoId, datosPago);
 }
 
 function confirmarMontosMixtosPago() {
@@ -5017,8 +5205,7 @@ function confirmarMontosMixtosPago() {
     montoDaviplata: metodo === 'daviplata_efectivo' ? montoDigital : 0,
     montoEfectivo
   };
-  cerrarModalPagoEntregado();
-  registrarEntregaConPago(index, pedidoId, datosPago);
+  continuarTrasElegirMetodoPago(index, pedidoId, datosPago);
 }
 
 let noEntregadoPendiente = { index: null, pedidoId: null, enUbicacion: null };
@@ -5346,10 +5533,149 @@ function asegurarModalFinalizacionEntrega() {
   return modal;
 }
 
-function mostrarOpcionesFinalizarEntrega(index, pedidoId) {
+function mostrarOpcionesFinalizarEntrega(index, pedidoId, opts = {}) {
+  if (mensajeroPuedeModificarValorPedido() && !opts.yaConfirmoValor) {
+    mostrarConfirmacionValorPedido(index, pedidoId);
+    return;
+  }
   finalizacionPendiente = { index, pedidoId };
   const modal = asegurarModalFinalizacionEntrega();
   modal.style.display = 'flex';
+}
+
+function mostrarConfirmacionValorPedido(index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) return;
+  const valorNum = obtenerValorAReclamarPedido(pedidoFinal);
+  const valorTxt = Number(valorNum || 0).toLocaleString('es-CO');
+  mostrarModalDecision({
+    titulo: 'Confirmar valor del pedido',
+    texto: `Pedido #${pedidoFinal.id}\nValor a cobrar: $${valorTxt}\n\n¿El valor es correcto?`,
+    textoConfirmar: 'Sí, es correcto',
+    claseConfirmar: 'btn-success',
+    textoSecundario: 'No, modificar',
+    claseSecundario: 'btn-warning',
+    mostrarSecundario: true,
+    textoCancelar: 'Cancelar',
+    onConfirmar: () => {
+      if (!pedidoFinal.valorModificado) pedidoFinal.valorModificado = false;
+      guardarPedidos();
+      mostrarOpcionesFinalizarEntrega(indexFinal, pedidoFinal.id, { yaConfirmoValor: true });
+    },
+    onSecundario: () => {
+      mostrarModalEditarValorMensajero(indexFinal, pedidoFinal.id);
+    },
+  });
+}
+
+function asegurarModalEditarValorMensajero() {
+  let modal = document.getElementById('modalEditarValorMensajero');
+  if (modal) return modal;
+  modal = document.createElement('div');
+  modal.id = 'modalEditarValorMensajero';
+  modal.className = 'modal-no-entregado-backdrop';
+  modal.innerHTML = `
+    <div class="modal-no-entregado-card modal-editar-valor-mensajero-card">
+      <h3>Modificar valor del pedido</h3>
+      <p class="modal-editar-pedido-ayuda" id="modalEditarValorMensajeroAyuda">Indica el valor correcto a cobrar.</p>
+      <label class="modal-editar-pedido-label" for="inputEditarValorMensajero">Nuevo valor</label>
+      <input type="text" id="inputEditarValorMensajero" class="modal-editar-pedido-input" inputmode="numeric" autocomplete="off" placeholder="Ej: 120.000">
+      <p id="modalEditarValorMensajeroError" class="auth-form-error" role="alert" style="display:none;"></p>
+      <div class="modal-no-entregado-actions">
+        <button type="button" class="btn-primary" id="btnGuardarValorMensajero">Guardar y continuar</button>
+        <button type="button" class="btn-info" id="btnCancelarValorMensajero">Cancelar</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  const input = modal.querySelector('#inputEditarValorMensajero');
+  if (input) {
+    input.addEventListener('input', () => aplicarFormatoMilesEnInput(input));
+  }
+  modal.querySelector('#btnGuardarValorMensajero')?.addEventListener('click', () => {
+    void confirmarEdicionValorMensajero();
+  });
+  modal.querySelector('#btnCancelarValorMensajero')?.addEventListener('click', () => {
+    cerrarModalEditarValorMensajero();
+  });
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) cerrarModalEditarValorMensajero();
+  });
+  return modal;
+}
+
+let edicionValorMensajeroPendiente = { index: null, pedidoId: null };
+
+function cerrarModalEditarValorMensajero() {
+  const modal = document.getElementById('modalEditarValorMensajero');
+  if (modal) modal.style.display = 'none';
+  edicionValorMensajeroPendiente = { index: null, pedidoId: null };
+}
+
+function mostrarModalEditarValorMensajero(index, pedidoId) {
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) return;
+  edicionValorMensajeroPendiente = { index: indexFinal, pedidoId: pedidoFinal.id };
+  const modal = asegurarModalEditarValorMensajero();
+  const ayuda = document.getElementById('modalEditarValorMensajeroAyuda');
+  const input = document.getElementById('inputEditarValorMensajero');
+  const err = document.getElementById('modalEditarValorMensajeroError');
+  if (ayuda) {
+    ayuda.textContent = `Pedido #${pedidoFinal.id}. Valor actual: $${Number(
+      obtenerValorAReclamarPedido(pedidoFinal) || 0
+    ).toLocaleString('es-CO')}.`;
+  }
+  if (err) {
+    err.style.display = 'none';
+    err.textContent = '';
+  }
+  if (input) {
+    const digitos = String(pedidoFinal.valor || '').replace(/\D/g, '');
+    input.value = digitos ? parseInt(digitos, 10).toLocaleString('es-CO') : '';
+    setTimeout(() => input.focus(), 50);
+  }
+  modal.style.display = 'flex';
+}
+
+function confirmarEdicionValorMensajero() {
+  const { index, pedidoId } = edicionValorMensajeroPendiente;
+  const { pedido, indexActual } = obtenerPedidoPorId(pedidoId);
+  const indexFinal = indexActual >= 0 ? indexActual : index;
+  const pedidoFinal = pedido || pedidos[indexFinal];
+  if (!pedidoFinal) {
+    cerrarModalEditarValorMensajero();
+    return;
+  }
+  const input = document.getElementById('inputEditarValorMensajero');
+  const err = document.getElementById('modalEditarValorMensajeroError');
+  const digitos = String(input?.value || '').replace(/\D/g, '');
+  if (!digitos) {
+    if (err) {
+      err.textContent = 'Indica el valor correcto (solo números).';
+      err.style.display = 'block';
+    }
+    return;
+  }
+  const valorAnteriorDigitos = String(pedidoFinal.valor || '').replace(/\D/g, '') || '0';
+  if (pedidoFinal.valorOriginal == null || String(pedidoFinal.valorOriginal).trim() === '') {
+    pedidoFinal.valorOriginal = valorAnteriorDigitos;
+  }
+  pedidoFinal.valor = digitos;
+  const originalDigitos = String(pedidoFinal.valorOriginal || '').replace(/\D/g, '') || '0';
+  pedidoFinal.valorModificado = originalDigitos !== digitos;
+  guardarPedidos();
+  cerrarModalEditarValorMensajero();
+  mostrarToast(
+    pedidoFinal.valorModificado
+      ? `Valor actualizado a $${parseInt(digitos, 10).toLocaleString('es-CO')}`
+      : 'El valor quedó igual al original',
+    'success'
+  );
+  mostrarOpcionesFinalizarEntrega(indexFinal, pedidoFinal.id, { yaConfirmoValor: true });
 }
 
 function cerrarModalFinalizacionEntrega() {
@@ -5407,8 +5733,17 @@ function finalizarEntregaConResultado(tipoFinalizacion) {
   }
 
   if (tipoFinalizacion === 'sin_foto') {
-    pagoEntregadoPendiente = { index: indexFinal, pedidoId, enviarWhatsAppAdmin: false };
+    pagoEntregadoPendiente = {
+      index: indexFinal,
+      pedidoId,
+      enviarWhatsAppAdmin: false,
+      lugarEntrega: null,
+      recibidoPor: '',
+      datosPagoPendientes: null,
+      cambioMetodo: '',
+    };
     const modalPago = asegurarModalPagoEntregado();
+    mostrarPasoModalPagoEntregado('lugar');
     modalPago.style.display = 'flex';
     return;
   }
@@ -6144,6 +6479,11 @@ function normalizarPedidoEnMemoria(p) {
   if (!p.hasOwnProperty('mensajeNoEntregadoTienda')) p.mensajeNoEntregadoTienda = '';
   if (!p.hasOwnProperty('pendienteNotificarClienteNoEntregado')) p.pendienteNotificarClienteNoEntregado = false;
   if (!p.hasOwnProperty('clienteNotificadoNoEntregado')) p.clienteNotificadoNoEntregado = false;
+  if (!p.hasOwnProperty('valorOriginal')) p.valorOriginal = null;
+  if (!p.hasOwnProperty('valorModificado')) p.valorModificado = false;
+  if (!p.hasOwnProperty('dioCambio')) p.dioCambio = false;
+  if (!p.hasOwnProperty('cambioMetodo')) p.cambioMetodo = '';
+  if (!p.hasOwnProperty('montoCambio')) p.montoCambio = 0;
   if (!p.hasOwnProperty('telefonos')) p.telefonos = [];
   if (!Array.isArray(p.telefonos)) p.telefonos = normalizarTelefonosDesdeTexto(String(p.telefonos || ''));
   if (p.telefonos.length === 0 && p.telefono) {
@@ -7542,12 +7882,13 @@ async function refrescarListaUsuariosPagina() {
     const tabla = document.createElement('table');
     tabla.className = 'modal-usuarios-tabla';
     tabla.innerHTML =
-      '<thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th class="modal-usuarios-th-acciones" scope="col"><span class="visually-hidden">Acciones</span></th></tr></thead><tbody></tbody>';
+      '<thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Modificar valor</th><th class="modal-usuarios-th-acciones" scope="col"><span class="visually-hidden">Acciones</span></th></tr></thead><tbody></tbody>';
     const tb = tabla.querySelector('tbody');
     for (const u of users) {
       const tr = document.createElement('tr');
       const soy = sesionUsuario && Number(u.id) === Number(sesionUsuario.id);
       const mail = u.email ? escapeHtmlTexto(u.email) : '<span class="modal-usuarios-sin-correo">—</span>';
+      const esMensajero = u.role === 'mensajero';
       tr.innerHTML = `
         <td>${escapeHtmlTexto(u.username)}${soy ? ' <span class="modal-usuarios-yo">(tú)</span>' : ''}</td>
         <td class="modal-usuarios-correo-celda">${mail}</td>
@@ -7556,6 +7897,13 @@ async function refrescarListaUsuariosPagina() {
             <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Administrador</option>
             <option value="mensajero"${u.role === 'mensajero' ? ' selected' : ''}>Mensajero</option>
           </select>
+        </td>
+        <td class="modal-usuarios-perm-valor-celda">
+          ${
+            esMensajero
+              ? `<label class="modal-usuarios-perm-valor-label"><input type="checkbox" class="modal-usuarios-perm-valor-check" data-user-id="${u.id}" ${u.puedeModificarValor ? 'checked' : ''}> Permitir</label>`
+              : '<span class="modal-usuarios-sin-correo">—</span>'
+          }
         </td>
         <td class="modal-usuarios-acciones-celda"></td>`;
       if (!soy) {
@@ -7574,6 +7922,12 @@ async function refrescarListaUsuariosPagina() {
           void eliminarUsuarioAdminDesdeModal(Number(u.id), String(u.username || ''));
         });
         accTd.appendChild(btnDel);
+      }
+      const chk = tr.querySelector('.modal-usuarios-perm-valor-check');
+      if (chk) {
+        chk.addEventListener('change', () => {
+          void cambiarPuedeModificarValorUsuario(Number(u.id), !!chk.checked, chk);
+        });
       }
       tb.appendChild(tr);
     }
@@ -7600,6 +7954,24 @@ async function cambiarRolUsuario(userId, role) {
   } catch (e) {
     mostrarToast(String(e.message || e), 'error');
     await refrescarListaUsuariosPagina();
+  }
+}
+
+async function cambiarPuedeModificarValorUsuario(userId, puede, checkboxEl) {
+  try {
+    await apiJson(`/api/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ puedeModificarValor: !!puede }),
+    });
+    mostrarToast(
+      puede
+        ? 'El mensajero podrá confirmar y modificar el valor de los pedidos'
+        : 'El mensajero ya no podrá modificar el valor de los pedidos',
+      'success'
+    );
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+    if (checkboxEl) checkboxEl.checked = !puede;
   }
 }
 
