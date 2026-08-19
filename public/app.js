@@ -2272,6 +2272,46 @@ function obtenerValorAReclamarPedido(pedido) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Si el cliente pagó (en parte) en efectivo y las vueltas se dieron por Nequi/Daviplata,
+ * ese monto de cambio se queda en efectivo físico y sale del medio digital.
+ * Ej: cobran $75.000, billete $100.000, vueltas $25.000 por Nequi
+ * → efectivo $100.000, Nequi -$25.000 (neto a tienda sigue $75.000).
+ */
+function aplicarAjusteVueltasDigitalesSobreMontos(datosPago) {
+  const out = {
+    metodo: datosPago.metodo,
+    montoNequi: Number(datosPago.montoNequi || 0),
+    montoDaviplata: Number(datosPago.montoDaviplata || 0),
+    montoEfectivo: Number(datosPago.montoEfectivo || 0),
+    dioCambio: !!datosPago.dioCambio,
+    cambioMetodo: String(datosPago.cambioMetodo || ''),
+    montoCambio: Number(datosPago.montoCambio || 0),
+  };
+  if (!out.dioCambio || out.montoCambio <= 0) return out;
+  const medio = out.cambioMetodo;
+  if (medio !== 'nequi' && medio !== 'daviplata') return out;
+
+  const pagoIncluyeEfectivo =
+    out.montoEfectivo > 0 ||
+    out.metodo === 'efectivo' ||
+    out.metodo === 'nequi_efectivo' ||
+    out.metodo === 'daviplata_efectivo';
+  if (!pagoIncluyeEfectivo) return out;
+
+  out.montoEfectivo += out.montoCambio;
+  if (medio === 'nequi') out.montoNequi -= out.montoCambio;
+  else out.montoDaviplata -= out.montoCambio;
+  out.ajusteVueltasDigitales = true;
+  return out;
+}
+
+function formatearMontoConSigno(n) {
+  const v = Number(n || 0);
+  if (v < 0) return `-$${Math.abs(v).toLocaleString('es-CO')}`;
+  return `$${v.toLocaleString('es-CO')}`;
+}
+
 /** Mismos filtros y sumas que el resumen del mensajero (Nequi, Daviplata, domicilio, etc.). */
 function calcularTotalesEntregaPedidos(arr) {
   const lista = Array.isArray(arr) ? arr : [];
@@ -2301,9 +2341,9 @@ function calcularTotalesEntregaPedidos(arr) {
     recogidoDelDia > 0 ||
     pagoDomiciliario > 0 ||
     entregarTienda > 0 ||
-    totalPagadoNequi > 0 ||
-    totalPagadoDaviplata > 0 ||
-    totalPagadoEfectivo > 0;
+    totalPagadoNequi !== 0 ||
+    totalPagadoDaviplata !== 0 ||
+    totalPagadoEfectivo !== 0;
   return {
     totalDelDia,
     recogidoDelDia,
@@ -2319,11 +2359,20 @@ function calcularTotalesEntregaPedidos(arr) {
 function htmlBloqueTotalesResumen(totales, opts = {}) {
   const ocultarNequi = !!(opts && opts.ocultarNequi);
   const ocultarTotalDelDia = !!(opts && opts.ocultarTotalDelDia);
-  const showNequi = !ocultarNequi && totales.totalPagadoNequi > 0 ? 'inline-flex' : 'none';
-  const showDav = totales.totalPagadoDaviplata > 0 ? 'inline-flex' : 'none';
-  const showEfectivo = totales.totalPagadoEfectivo > 0 ? 'inline-flex' : 'none';
+  const showNequi = !ocultarNequi && totales.totalPagadoNequi !== 0 ? 'inline-flex' : 'none';
+  const showDav = totales.totalPagadoDaviplata !== 0 ? 'inline-flex' : 'none';
+  const showEfectivo = totales.totalPagadoEfectivo !== 0 ? 'inline-flex' : 'none';
   const showPagoDomiciliario = totales.pagoDomiciliario > 0 ? 'inline-flex' : 'none';
   const fmt = (x) => Number(x).toLocaleString('es-CO');
+  const fmtNeto = (x) => {
+    const v = Number(x || 0);
+    if (v < 0) return `-${Math.abs(v).toLocaleString('es-CO')}`;
+    return fmt(v);
+  };
+  const etiquetaNequi =
+    totales.totalPagadoNequi < 0 ? 'Cambio enviado por Nequi (neto)' : 'Pagado por Nequi';
+  const etiquetaDav =
+    totales.totalPagadoDaviplata < 0 ? 'Cambio enviado por Daviplata (neto)' : 'Pagado por Daviplata';
   const bloqueTotalDelDia = ocultarTotalDelDia
     ? ''
     : `<div class="total-item total-total-dia">` +
@@ -2334,7 +2383,7 @@ function htmlBloqueTotalesResumen(totales, opts = {}) {
     ? ''
     : `<div class="total-item total-nequi" style="display:${showNequi}">` +
       `<span class="total-icon icon-nequi"><i class="fa-solid fa-mobile-screen-button"></i></span>` +
-      `Pagado por Nequi: $${fmt(totales.totalPagadoNequi)}` +
+      `${etiquetaNequi}: $${fmtNeto(totales.totalPagadoNequi)}` +
       `</div>`;
   return (
     `<div class="totales-resumen">` +
@@ -2354,7 +2403,7 @@ function htmlBloqueTotalesResumen(totales, opts = {}) {
     bloqueNequi +
     `<div class="total-item total-daviplata" style="display:${showDav}">` +
     `<span class="total-icon icon-daviplata"><i class="fa-solid fa-wallet"></i></span>` +
-    `Pagado por Daviplata: $${fmt(totales.totalPagadoDaviplata)}` +
+    `${etiquetaDav}: $${fmtNeto(totales.totalPagadoDaviplata)}` +
     `</div>` +
     `<div class="total-item total-efectivo" style="display:${showEfectivo}">` +
     `<span class="total-icon icon-efectivo"><i class="fa-solid fa-money-bill-wave"></i></span>` +
@@ -2603,15 +2652,45 @@ function renderPedidos() {
     if (elRecogidoDia) elRecogidoDia.textContent = totales.recogidoDelDia.toLocaleString('es-CO');
     if (elPagoDomiciliario) elPagoDomiciliario.textContent = totales.pagoDomiciliario.toLocaleString('es-CO');
     if (elEntregarTienda) elEntregarTienda.textContent = totales.entregarTienda.toLocaleString('es-CO');
-    if (elPagadoNequi) elPagadoNequi.textContent = totales.totalPagadoNequi.toLocaleString('es-CO');
-    if (elPagadoDaviplata) elPagadoDaviplata.textContent = totales.totalPagadoDaviplata.toLocaleString('es-CO');
+    if (elPagadoNequi) {
+      elPagadoNequi.textContent =
+        totales.totalPagadoNequi < 0
+          ? `-${Math.abs(totales.totalPagadoNequi).toLocaleString('es-CO')}`
+          : totales.totalPagadoNequi.toLocaleString('es-CO');
+      if (itemNequi) {
+        const label =
+          totales.totalPagadoNequi < 0 ? 'Cambio enviado por Nequi (neto): $' : 'Pagado por Nequi: $';
+        const icon = itemNequi.querySelector('.total-icon');
+        itemNequi.innerHTML = '';
+        if (icon) itemNequi.appendChild(icon);
+        itemNequi.appendChild(document.createTextNode(` ${label}`));
+        itemNequi.appendChild(elPagadoNequi);
+      }
+    }
+    if (elPagadoDaviplata) {
+      elPagadoDaviplata.textContent =
+        totales.totalPagadoDaviplata < 0
+          ? `-${Math.abs(totales.totalPagadoDaviplata).toLocaleString('es-CO')}`
+          : totales.totalPagadoDaviplata.toLocaleString('es-CO');
+      if (itemDaviplata) {
+        const label =
+          totales.totalPagadoDaviplata < 0
+            ? 'Cambio enviado por Daviplata (neto): $'
+            : 'Pagado por Daviplata: $';
+        const icon = itemDaviplata.querySelector('.total-icon');
+        itemDaviplata.innerHTML = '';
+        if (icon) itemDaviplata.appendChild(icon);
+        itemDaviplata.appendChild(document.createTextNode(` ${label}`));
+        itemDaviplata.appendChild(elPagadoDaviplata);
+      }
+    }
     if (elPagadoEfectivo) elPagadoEfectivo.textContent = totales.totalPagadoEfectivo.toLocaleString('es-CO');
     if (itemNequi)
       itemNequi.style.display =
-        esSesionAdmin() ? 'none' : totales.totalPagadoNequi > 0 ? 'inline-flex' : 'none';
+        esSesionAdmin() ? 'none' : totales.totalPagadoNequi !== 0 ? 'inline-flex' : 'none';
     if (itemDaviplata)
-      itemDaviplata.style.display = totales.totalPagadoDaviplata > 0 ? 'inline-flex' : 'none';
-    if (itemEfectivo) itemEfectivo.style.display = totales.totalPagadoEfectivo > 0 ? 'inline-flex' : 'none';
+      itemDaviplata.style.display = totales.totalPagadoDaviplata !== 0 ? 'inline-flex' : 'none';
+    if (itemEfectivo) itemEfectivo.style.display = totales.totalPagadoEfectivo !== 0 ? 'inline-flex' : 'none';
     if (itemPagoDomiciliario)
       itemPagoDomiciliario.style.display = totales.pagoDomiciliario > 0 ? 'inline-flex' : 'none';
     if (itemEntregarTienda)
@@ -2819,7 +2898,7 @@ function crearTarjetaPedido(pedido, index) {
   } else if (etapaActual === 'enDestino') {
     btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnRuta(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en ruta</button>`;
   } else if (etapaActual === 'finalizado') {
-    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnRuta(${index})"><i class="fa-solid fa-rotate-left"></i> Regresar a en ruta</button>`;
+    btnRegresarEtapaHtml = `<button type="button" class="btn-info" onclick="marcarRegresarAEnRuta(${index})" style="width:100%;"><i class="fa-solid fa-rotate-left"></i> Regresar a en ruta</button>`;
   }
   const btnReactivarCanceladoHtml =
     adminUi && pedido.cancelado
@@ -3539,6 +3618,7 @@ function marcarRegresarAEnRuta(index) {
     pedido.dioCambio = false;
     pedido.cambioMetodo = '';
     pedido.montoCambio = 0;
+    pedido.ajusteVueltasDigitales = false;
     limpiarEntregaPorteriaEnPedido(pedido);
     vistaPedidosSeleccionadaManual = true;
     vistaPedidosActual = 'enCurso';
@@ -4505,8 +4585,10 @@ function construirMensajeEntregaRegistrada(pedido) {
   if (!pedido) return '';
   if (pedido.mensajeEntregaPorteria) return String(pedido.mensajeEntregaPorteria);
   const pedidoId = pedido.id != null ? pedido.id : 'N/A';
-  const montoRecibido =
-    Number(pedido.montoNequi || 0) + Number(pedido.montoDaviplata || 0) + Number(pedido.montoEfectivo || 0);
+  const montoNequi = Number(pedido.montoNequi || 0);
+  const montoDav = Number(pedido.montoDaviplata || 0);
+  const montoEfectivo = Number(pedido.montoEfectivo || 0);
+  const montoRecibido = montoNequi + montoDav + montoEfectivo;
   const productosEntregados = textoProductosEntregaParaSoporte(pedido);
   const metodoPagoTexto = textoMetodoPagoEntregaPedido(pedido);
   const metodo = pedido.metodoPagoEntrega || '';
@@ -4530,8 +4612,16 @@ function construirMensajeEntregaRegistrada(pedido) {
         }`
       : 'Valor modificado: no';
   const lineaCambio = textoLineaCambioEntregaPedido(pedido);
+  let lineasDesglose = '';
+  if (metodo !== 'pagado_tienda' && metodo !== 'es_cambio') {
+    const partes = [];
+    if (montoEfectivo) partes.push(`Efectivo ${formatearMontoConSigno(montoEfectivo)}`);
+    if (montoNequi) partes.push(`Nequi ${formatearMontoConSigno(montoNequi)}`);
+    if (montoDav) partes.push(`Daviplata ${formatearMontoConSigno(montoDav)}`);
+    if (partes.length) lineasDesglose = `\nDesglose: ${partes.join(' · ')}`;
+  }
   return `Pedido #${pedidoId} entregado${detalleEntrega ? `\n${detalleEntrega}` : ''}
-Monto recibido: ${detalleMonto}
+Monto recibido: ${detalleMonto}${lineasDesglose}
 ${lineaValor}
 ${lineaCambio}
 Producto(s) entregado(s):
@@ -4980,15 +5070,18 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
   const pedido = pedidos[indexFinal];
   if (!pedido) return;
 
+  const datosAjustados = aplicarAjusteVueltasDigitalesSobreMontos(datosPago);
+
   pedido.noEntregado = false;
   pedido.envioRecogido = false;
-  pedido.metodoPagoEntrega = datosPago.metodo;
-  pedido.montoNequi = Number(datosPago.montoNequi || 0);
-  pedido.montoDaviplata = Number(datosPago.montoDaviplata || 0);
-  pedido.montoEfectivo = Number(datosPago.montoEfectivo || 0);
-  pedido.dioCambio = !!datosPago.dioCambio;
-  pedido.cambioMetodo = datosPago.dioCambio ? String(datosPago.cambioMetodo || '') : '';
-  pedido.montoCambio = datosPago.dioCambio ? Number(datosPago.montoCambio || 0) : 0;
+  pedido.metodoPagoEntrega = datosAjustados.metodo;
+  pedido.montoNequi = Number(datosAjustados.montoNequi || 0);
+  pedido.montoDaviplata = Number(datosAjustados.montoDaviplata || 0);
+  pedido.montoEfectivo = Number(datosAjustados.montoEfectivo || 0);
+  pedido.dioCambio = !!datosAjustados.dioCambio;
+  pedido.cambioMetodo = datosAjustados.dioCambio ? String(datosAjustados.cambioMetodo || '') : '';
+  pedido.montoCambio = datosAjustados.dioCambio ? Number(datosAjustados.montoCambio || 0) : 0;
+  pedido.ajusteVueltasDigitales = !!datosAjustados.ajusteVueltasDigitales;
 
   const esPorteria =
     pagoEntregadoPendiente &&
@@ -6484,6 +6577,7 @@ function normalizarPedidoEnMemoria(p) {
   if (!p.hasOwnProperty('dioCambio')) p.dioCambio = false;
   if (!p.hasOwnProperty('cambioMetodo')) p.cambioMetodo = '';
   if (!p.hasOwnProperty('montoCambio')) p.montoCambio = 0;
+  if (!p.hasOwnProperty('ajusteVueltasDigitales')) p.ajusteVueltasDigitales = false;
   if (!p.hasOwnProperty('telefonos')) p.telefonos = [];
   if (!Array.isArray(p.telefonos)) p.telefonos = normalizarTelefonosDesdeTexto(String(p.telefonos || ''));
   if (p.telefonos.length === 0 && p.telefono) {
