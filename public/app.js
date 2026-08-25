@@ -390,7 +390,72 @@ function esLineaPlantillaPedidoNoProducto(linea) {
   if (/^Env[ií]o\b/i.test(L)) return true;
   if (/^Horario\b/i.test(L)) return true;
   if (/^\d+\s*:\s*$/.test(L) || /^\d+\s*:\s*Para\b/i.test(L)) return true;
+  // Campos de la guía (no son productos)
+  if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
+  if (
+    /^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|M[oó]vil|Valor|Total|A\s+recoger|Por\s+cobrar|Recaudo|Pago)\b/i.test(
+      L
+    )
+  ) {
+    return true;
+  }
+  if (/^N[uú]mero\s+de\s+celular\b/i.test(L)) return true;
+  // Encabezado de productos (sin ítem en la misma línea)
+  if (/^Producto(?:s)?\b/i.test(L)) {
+    if (!/:\s*\S/.test(L)) return true;
+    if (/^Producto(?:s)?\s*[🎁🎯]?\s*:\s*$/iu.test(L)) return true;
+  }
   return false;
+}
+
+/**
+ * Extrae solo las líneas de producto tras el encabezado Producto/Productos.
+ * Evita el patrón "Pedido:" que coincidía con "Para agilizar tu pedido…datos:" y tragaba toda la guía.
+ */
+function extraerProductosSoloDelBloque(bloque) {
+  const lines = String(bloque || '').split('\n');
+  const esCorte = (raw) => {
+    const L = String(raw || '').trim();
+    if (!L) return false;
+    if (esLineaPlantillaPedidoNoProducto(L)) return true;
+    if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
+    if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|Valor|Total|Env[ií]o|Horario)\b/i.test(L)) {
+      return true;
+    }
+    if (/^¿?\s*Todo\s+en\s+orden\b/i.test(L)) return true;
+    if (/^Para\s+agilizar\b/i.test(L)) return true;
+    return false;
+  };
+  const limpiarLineaProducto = (raw) => {
+    let L = String(raw || '').trim();
+    if (!L) return '';
+    L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
+    L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
+    if (!L || esLineaPlantillaPedidoNoProducto(L) || esCorte(L)) return '';
+    return L;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    // Encabezado: "Producto:", "Producto 🎯:", "Productos", etc. (no "pedido" genérico)
+    if (!/^Producto(?:s)?\b/i.test(line)) continue;
+
+    const out = [];
+    // Ítems en la misma línea tras "Producto…:"
+    const mMisma = line.match(/^Producto(?:s)?\b[^:]*:\s*(.+)$/i);
+    if (mMisma && mMisma[1] && mMisma[1].trim()) {
+      const mismo = limpiarLineaProducto(mMisma[1]);
+      if (mismo) out.push(mismo);
+    }
+
+    for (let j = i + 1; j < lines.length; j++) {
+      if (esCorte(lines[j])) break;
+      const L = limpiarLineaProducto(lines[j]);
+      if (L) out.push(L);
+    }
+    if (out.length) return out;
+  }
+  return [];
 }
 
 function lineasProductosPedidoNormalizadas(pedido) {
@@ -1676,32 +1741,7 @@ const _RE_FIN_TRAS_NOMBRE = _RE_FIN_CAMPO_PEDIDO.replace(
 );
 
 function extraerProductosLineasTrasEncabezado(b) {
-  const lines = String(b || '').split('\n');
-  const esCorte = (raw) => {
-    const L = raw.trim();
-    if (!L) return false;
-    if (esLineaPlantillaPedidoNoProducto(L)) return true;
-    if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
-    if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|Valor|Total)\b/i.test(L) && /:\s*\S/.test(L)) return true;
-    return false;
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!/^Producto\b/i.test(line)) continue;
-    if (/:\s*\S/.test(line)) continue;
-    const out = [];
-    for (let j = i + 1; j < lines.length; j++) {
-      const raw = lines[j];
-      if (esCorte(raw)) break;
-      let L = raw.trim();
-      if (!L) continue;
-      L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
-      L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
-      if (L && !esLineaPlantillaPedidoNoProducto(L)) out.push(L);
-    }
-    if (out.length) return out;
-  }
-  return [];
+  return extraerProductosSoloDelBloque(b);
 }
 
 /**
@@ -1845,29 +1885,30 @@ function extraerCamposPedido(bloque) {
   }
 
   let productos = [];
-  // Corta antes de la pregunta del formato (con o sin ¿, negrita *...*, emoji).
-  const prodFin =
-    '(?=(?:\\*|\\s)*¿?\\s*Todo\\s+en\\s+orden|Para agilizar|Env[ií]o|Horario|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
-  const prodPatrones = [
-    new RegExp(`Producto\\s*🎁[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
-    new RegExp(`Producto\\s*🎯[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
-    new RegExp(`Producto[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
-    new RegExp(`Productos?[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
-    new RegExp(`Pedido[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'i'),
-  ];
-  for (const re of prodPatrones) {
-    const m = b.match(re);
-    if (m && m[1]) {
-      productos = m[1]
-        .trim()
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l && !esLineaPlantillaPedidoNoProducto(l));
-      if (productos.length) break;
-    }
-  }
+  // Primero por líneas (no tragar la guía completa). El viejo patrón Pedido: coincidía
+  // con "Para agilizar tu pedido…datos:" y metía dirección/nombre/teléfono en productos.
+  productos = extraerProductosSoloDelBloque(b);
   if (productos.length === 0) {
-    productos = extraerProductosLineasTrasEncabezado(b);
+    const prodFin =
+      '(?=(?:\\*|\\s)*¿?\\s*Todo\\s+en\\s+orden|Para agilizar|Env[ií]o|Horario|📍|📲|💰|' +
+      _RE_EMOJI_NOMBRE +
+      '|Direcci[oó]n\\b|Ubicaci[oó]n\\b|Nombre\\b|Tel[ée]fono\\b|Celular\\b|Valor\\b|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
+    const prodPatrones = [
+      new RegExp(`Producto\\s*🎁[^:\\n]*:\\s*([^\\n]+)`, 'i'),
+      new RegExp(`Producto\\s*🎯[^:\\n]*:\\s*([^\\n]+)`, 'i'),
+      new RegExp(`Producto(?:s)?[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'iu'),
+    ];
+    for (const re of prodPatrones) {
+      const m = b.match(re);
+      if (m && m[1]) {
+        productos = m[1]
+          .trim()
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !esLineaPlantillaPedidoNoProducto(l));
+        if (productos.length) break;
+      }
+    }
   }
 
   return { direccion, nombre, telefono, telefonos, valor, productos };
