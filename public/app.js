@@ -376,14 +376,62 @@ function lineasProductosDesdeArray(arr) {
     .filter((p) => p.length > 0 && !/^cambio\.?$/i.test(p) && !esLineaPlantillaPedidoNoProducto(p));
 }
 
-/** Textos del formato de chat (¿Todo en orden?, envío, etc.) — nunca son productos. */
-function esLineaPlantillaPedidoNoProducto(linea) {
-  const L = String(linea || '')
-    .trim()
+/**
+ * Extrae solo productos: texto entre el último "Producto"/"Productos" y "¿Todo en orden?".
+ * Ignora dirección, nombre, teléfono y el resto de la guía.
+ */
+function extraerProductosSoloDelBloque(bloque) {
+  const text = String(bloque || '').replace(/\r\n/g, '\n');
+  if (!text.trim()) return [];
+
+  // Última aparición de una línea que EMPIEZA por Producto/Productos (no "pedido").
+  const reHead = /(^|\n)[ \t]*((?:Producto|Productos)\b[^\n]*)/gi;
+  let m;
+  let headEnd = -1;
+  let headLine = '';
+  while ((m = reHead.exec(text))) {
+    headLine = String(m[2] || '').trim();
+    headEnd = m.index + m[0].length;
+  }
+  if (headEnd < 0) return [];
+
+  let chunk = text.slice(headEnd);
+  // Cortar en "¿Todo en orden?" (con o sin ¿ y emoji)
+  const cutTodo = chunk.search(/\n[ \t]*¿?\s*Todo\s+en\s+orden\b/i);
+  if (cutTodo >= 0) chunk = chunk.slice(0, cutTodo);
+  // Cortar si viene otro pedido numerado
+  const cutNum = chunk.search(/\n[ \t]*\d+[ \t]*:\s*(\n|$)/);
+  if (cutNum >= 0) chunk = chunk.slice(0, cutNum);
+
+  const out = [];
+  // Texto en la misma línea del encabezado (tras quitar "Producto" y el emoji)
+  let restHead = headLine.replace(/^(?:Producto|Productos)\b/i, '').trim();
+  restHead = restHead.replace(/^[🎯🎁]\uFE0F?/u, '').trim();
+  restHead = restHead.replace(/^:\s*/, '').trim();
+  if (restHead && !esLineaResiduoGuiaNoProducto(restHead)) out.push(restHead);
+
+  for (const raw of chunk.split('\n')) {
+    let L = String(raw || '').trim();
+    if (!L) continue;
+    L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
+    L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
+    L = L.replace(/^[🎯🎁]\uFE0F?\s*/u, '').trim();
+    // Descartar restos de emoji / sustitutos huérfanos
+    if (!L || /^[\uD800-\uDFFF]+$/.test(L)) continue;
+    try {
+      if (/^\p{Extended_Pictographic}+$/u.test(L)) continue;
+    } catch (_e) {}
+    if (esLineaResiduoGuiaNoProducto(L)) continue;
+    out.push(L);
+  }
+  return out;
+}
+
+/** Líneas que nunca deben aparecer como producto (campos de la guía o basura). */
+function esLineaResiduoGuiaNoProducto(linea) {
+  const L0 = String(linea || '').trim();
+  const L = L0
     .replace(/^[*_~`•\u2022\-]+\s*/, '')
-    .replace(/\s*[*_~`]+$/g, '')
-    .trim()
-    // Por si el emoji quedó delante o con selector de variación
     .replace(/^(?:📍|🙋|📲|💰|🚚|🕚|✅|🎯|🎁)\uFE0F?\s*/u, '')
     .trim();
   if (!L) return true;
@@ -392,78 +440,55 @@ function esLineaPlantillaPedidoNoProducto(linea) {
   if (/^Para\s+agilizar\b/i.test(L)) return true;
   if (/^Env[ií]o\b/i.test(L)) return true;
   if (/^Horario\b/i.test(L)) return true;
-  if (/^\d+\s*:\s*$/.test(L) || /^\d+\s*:\s*Para\b/i.test(L)) return true;
-  if (/^(?:📍|🙋|📲|💰)/u.test(String(linea || '').trim())) return true;
-  if (
-    /^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|M[oó]vil|Valor|Total|A\s+recoger|Por\s+cobrar|Recaudo|Pago)\b/i.test(
-      L
-    )
-  ) {
+  if (/^\d+\s*:\s*$/.test(L)) return true;
+  if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|M[oó]vil|Valor|Total|A\s+recoger|Por\s+cobrar|Recaudo|Pago|N[uú]mero)\b/i.test(L)) {
     return true;
   }
-  if (/^N[uú]mero\s+de\s+celular\b/i.test(L)) return true;
   if (/^quien\s+recib/i.test(L)) return true;
-  if (/^conjunto\b/i.test(L) && /\b(soacha|bogot|barrio|localidad)\b/i.test(L)) return true;
-  // Solo un teléfono o solo un monto → no es nombre de producto
   if (/^[\d\s+().-]{7,}$/.test(L) && L.replace(/\D/g, '').length >= 7) return true;
   if (/^\$?\s*[\d.,]+\s*$/.test(L)) return true;
-  // Encabezado de productos (sin ítem en la misma línea)
-  if (/^Producto(?:s)?\b/i.test(L)) {
-    if (!/:\s*\S/.test(L)) return true;
-    if (/^Producto(?:s)?\s*[🎁🎯]?\s*:\s*$/iu.test(L)) return true;
+  if (/^(?:Producto|Productos)\b/i.test(L) && !/:\s*\S/.test(L)) return true;
+  // Calles / direcciones típicas (no son el nombre del artículo)
+  if (/^(?:calle|carrera|cra\.?|cl\.?|kr\.?|av\.?|avenida|diagonal|transversal|tv\.?)\b/i.test(L)) {
+    return true;
   }
   return false;
 }
 
-/**
- * Extrae solo las líneas de producto tras el ÚLTIMO encabezado Producto/Productos.
- * No usa "Pedido:" (coincidía con "Para agilizar tu pedido…datos:" y tragaba la guía).
- */
-function extraerProductosSoloDelBloque(bloque) {
-  const text = String(bloque || '');
-  const lines = text.split('\n');
+/** Compat: filtros usados al mostrar/editar productos. */
+function esLineaPlantillaPedidoNoProducto(linea) {
+  return esLineaResiduoGuiaNoProducto(linea);
+}
 
-  // Índice del último encabezado "Producto" / "Productos" (con o sin emoji/dos puntos)
-  let idxHead = -1;
+/** Valor a cobrar: solo "Valor a pagar" / "Valor a recoger" / 💰 Valor. Nunca el $ del Envío. */
+function extraerValorAPagarDesdeBloque(bloque) {
+  const lines = String(bloque || '').replace(/\r\n/g, '\n').split('\n');
   for (let i = 0; i < lines.length; i++) {
-    if (/^\s*Producto(?:s)?\b/i.test(lines[i])) idxHead = i;
+    const L = lines[i].trim();
+    if (!L) continue;
+    if (/^Env[ií]o\b/i.test(L) || /\bEnv[ií]o\b/i.test(L) && /🚚/.test(L)) continue;
+    const esEtiquetaValor =
+      /^(?:💰\s*)?Valor\s+a\s+pagar\b/i.test(L) ||
+      /^(?:💰\s*)?Valor\s+a\s+recoger\b/i.test(L) ||
+      (/^💰/.test(L) && /\bValor\b/i.test(L) && !/\bEnv[ií]o\b/i.test(L));
+    if (!esEtiquetaValor) continue;
+
+    const mMisma = L.match(/:\s*\$?\s*([\d.,]+)/);
+    if (mMisma) {
+      const d = mMisma[1].replace(/[^\d]/g, '');
+      if (d) return d;
+    }
+    for (let j = i + 1; j < lines.length; j++) {
+      const n = lines[j].trim();
+      if (!n) continue;
+      if (/^(?:Env[ií]o|Horario|Producto|¿?\s*Todo\s+en\s+orden|📍|🙋|📲|💰)/i.test(n)) break;
+      if (/pagados|gracias|envio/i.test(n) && /\$/.test(n)) break;
+      const d = n.replace(/[^\d]/g, '');
+      if (d) return d;
+      break;
+    }
   }
-  if (idxHead < 0) return [];
-
-  const esCorte = (raw) => {
-    const rawT = String(raw || '').trim();
-    if (!rawT) return false;
-    if (esLineaPlantillaPedidoNoProducto(rawT)) return true;
-    if (/^(?:📍|🙋|📲|💰|Env[ií]o\b|Horario\b)/u.test(rawT)) return true;
-    if (/^¿?\s*Todo\s+en\s+orden\b/i.test(rawT)) return true;
-    if (/^Para\s+agilizar\b/i.test(rawT)) return true;
-    if (/^\d+\s*:\s*$/.test(rawT)) return true;
-    return false;
-  };
-
-  const limpiarLineaProducto = (raw) => {
-    let L = String(raw || '').trim();
-    if (!L) return '';
-    L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
-    L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
-    if (!L || esLineaPlantillaPedidoNoProducto(L)) return '';
-    return L;
-  };
-
-  const out = [];
-  const head = lines[idxHead].trim();
-  const mMisma = head.match(/^Producto(?:s)?\b[^:]*:\s*(.+)$/i);
-  if (mMisma && mMisma[1] && mMisma[1].trim()) {
-    const mismo = limpiarLineaProducto(mMisma[1]);
-    if (mismo) out.push(mismo);
-  }
-
-  for (let j = idxHead + 1; j < lines.length; j++) {
-    if (esCorte(lines[j])) break;
-    const L = limpiarLineaProducto(lines[j]);
-    if (L) out.push(L);
-  }
-  return out;
+  return null;
 }
 
 function lineasProductosPedidoNormalizadas(pedido) {
@@ -1864,40 +1889,39 @@ function extraerCamposPedido(bloque) {
     }
   }
 
-  const finValor =
-    `(?=Env[ií]o|Horario|Producto|¿Todo|Para agilizar|📍|${_RE_EMOJI_NOMBRE}|📲|💰|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)`;
   let valor = '0';
-  // Priorizar "Valor a pagar" / "Valor a recoger"; nunca tomar el $ del Envío.
-  const valPatrones = [
-    new RegExp(
-      `(?:Valor\\s+a\\s+pagar|Valor\\s+a\\s+recoger)[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`,
-      'i'
-    ),
-    new RegExp(`💰(?!\\s*Env[ií]o\\b)[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`, 'iu'),
-    new RegExp(
-      '(?:A\\s+recoger|Valor(?!\\s+(?:del|de)\\s+env[ií]o)|Total|Por\\s+cobrar|Recaudo)[^:\\n]*:\\s*([\\s\\S]*?)' +
-        finValor,
-      'i'
-    ),
-  ];
-  for (const re of valPatrones) {
-    const m = b.match(re);
-    if (m && m[1]) {
-      const raw = m[1].trim().split('\n')[0].trim();
-      if (/env[ií]o|pagados|gracias/i.test(raw)) continue;
-      const soloDigitos = raw.replace(/[^\d]/g, '');
-      if (soloDigitos) {
-        valor = soloDigitos;
-        break;
+  const valorLineas = extraerValorAPagarDesdeBloque(b);
+  if (valorLineas) {
+    valor = valorLineas;
+  } else {
+    const finValor =
+      `(?=Env[ií]o|Horario|Producto|¿Todo|Para agilizar|📍|${_RE_EMOJI_NOMBRE}|📲|💰|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)`;
+    const valPatrones = [
+      new RegExp(
+        `(?:Valor\\s+a\\s+pagar|Valor\\s+a\\s+recoger)[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`,
+        'i'
+      ),
+      new RegExp(`💰(?!\\s*Env[ií]o\\b)[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`, 'iu'),
+    ];
+    for (const re of valPatrones) {
+      const m = b.match(re);
+      if (m && m[1]) {
+        const raw = m[1].trim().split('\n')[0].trim();
+        if (/env[ií]o|pagados|gracias/i.test(raw)) continue;
+        const soloDigitos = raw.replace(/[^\d]/g, '');
+        if (soloDigitos) {
+          valor = soloDigitos;
+          break;
+        }
       }
     }
-  }
-  if (!valor || valor === '0') {
-    const respaldo = extraerMontoValorRespaldoSinEnvio(b);
-    if (respaldo != null) valor = respaldo;
+    if (!valor || valor === '0') {
+      const respaldo = extraerMontoValorRespaldoSinEnvio(b);
+      if (respaldo != null) valor = respaldo;
+    }
   }
 
-  // Solo productos tras el encabezado Producto (nunca la guía completa).
+  // Solo productos entre "Producto" y "¿Todo en orden?"
   const productos = extraerProductosSoloDelBloque(b);
 
   return { direccion, nombre, telefono, telefonos, valor, productos };
@@ -2061,8 +2085,10 @@ async function procesarPedido() {
     telefono: campos.telefono,
     telefonos: Array.isArray(campos.telefonos) ? campos.telefonos : [],
     direccion: campos.direccion,
-    productos: campos.productos,
-    valor: campos.valor,
+    productos: Array.isArray(campos.productos) ? campos.productos : [],
+    valor: campos.valor || '0',
+    valorOriginal: null,
+    valorModificado: false,
     textoOriginal: texto,
     mapUrl: mapUrlFinal,
     coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
@@ -2227,8 +2253,10 @@ async function procesarMultiplesPedidos(texto) {
       telefono: campos.telefono,
       telefonos: Array.isArray(campos.telefonos) ? campos.telefonos : [],
       direccion: campos.direccion,
-      productos: campos.productos,
-      valor: campos.valor,
+      productos: Array.isArray(campos.productos) ? campos.productos : [],
+      valor: campos.valor || '0',
+      valorOriginal: null,
+      valorModificado: false,
       textoOriginal: bloque.trim(),
       mapUrl: mapUrlFinal,
       coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
