@@ -375,45 +375,35 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260825prod4"></script>
+<script src="app.js?v=20260825prodF"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    // Forzar actualización del SW / caché viejo del parser
-    navigator.serviceWorker.getRegistrations().then(function (regs) {
-      regs.forEach(function (r) {
-        try { r.update(); } catch (_e) {}
+    // Limpiar SW/caché viejos que dejaban el parser anterior (productos/valor incorrectos).
+    var reiniciar = function () {
+      navigator.serviceWorker.register('./sw.js?v=20260825f').catch(function (err) {
+        console.warn('[sw] No se pudo registrar:', err);
       });
-    });
-    if (window.caches && caches.keys) {
-      caches.keys().then(function (keys) {
-        keys.forEach(function (k) {
-          if (k.indexOf('delivery-static-') === 0 && k !== 'delivery-static-v4') {
-            caches.delete(k);
-          }
+    };
+    Promise.resolve()
+      .then(function () {
+        return navigator.serviceWorker.getRegistrations();
+      })
+      .then(function (regs) {
+        return Promise.all(
+          (regs || []).map(function (r) {
+            return r.unregister();
+          })
+        );
+      })
+      .then(function () {
+        if (!window.caches || !caches.keys) return;
+        return caches.keys().then(function (keys) {
+          return Promise.all((keys || []).map(function (k) { return caches.delete(k); }));
         });
-      });
-    }
-    navigator.serviceWorker.register('./sw.js').then(function (reg) {
-      function avisarUpdate() {
-        if (!reg.waiting) return;
-        try {
-          if (typeof mostrarToast === 'function') {
-            mostrarToast('Hay una versión nueva. Recarga cuando puedas para actualizar.', 'info', 12000);
-          }
-        } catch (_e) {}
-      }
-      if (reg.waiting) avisarUpdate();
-      reg.addEventListener('updatefound', function () {
-        var nw = reg.installing;
-        if (!nw) return;
-        nw.addEventListener('statechange', function () {
-          if (nw.state === 'installed' && navigator.serviceWorker.controller) avisarUpdate();
-        });
-      });
-    }).catch(function (err) {
-      console.warn('[sw] No se pudo registrar:', err);
-    });
+      })
+      .then(reiniciar)
+      .catch(reiniciar);
   });
 }
 </script>

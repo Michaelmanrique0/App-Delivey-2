@@ -376,64 +376,66 @@ function lineasProductosDesdeArray(arr) {
     .filter((p) => p.length > 0 && !/^cambio\.?$/i.test(p) && !esLineaPlantillaPedidoNoProducto(p));
 }
 
+/** Quita emojis/tonos de piel al inicio de línea (📍, 🙋🏻, etc.). */
+function quitarPrefijoEmojiLinea(s) {
+  let L = String(s || '').trim();
+  for (let i = 0; i < 4; i++) {
+    const next = L
+      .replace(/^[\u200B-\u200D\uFEFF\uFE0F]+/g, '')
+      .replace(
+        /^(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})(?:\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF})?\uFE0F?(?:\u200D(?:\p{Extended_Pictographic}|\p{Emoji_Presentation})(?:\u{1F3FB}|\u{1F3FC}|\u{1F3FD}|\u{1F3FE}|\u{1F3FF})?\uFE0F?)*\s*/u,
+        ''
+      )
+      .trim();
+    if (next === L) break;
+    L = next;
+  }
+  return L;
+}
+
 /**
- * Extrae solo productos: texto entre el último "Producto"/"Productos" y "¿Todo en orden?".
- * Ignora dirección, nombre, teléfono y el resto de la guía.
+ * Productos = solo lo que hay entre la línea "Producto(s)" y "¿Todo en orden?".
  */
 function extraerProductosSoloDelBloque(bloque) {
   const text = String(bloque || '').replace(/\r\n/g, '\n');
   if (!text.trim()) return [];
 
-  // Última aparición de una línea que EMPIEZA por Producto/Productos (no "pedido").
-  const reHead = /(^|\n)[ \t]*((?:Producto|Productos)\b[^\n]*)/gi;
+  // Busca el último bloque Producto … ¿Todo en orden?
+  const re = /(?:^|\n)[ \t]*Producto(?:s)?\b[^\n]*\n([\s\S]*?)(?=\n[ \t]*¿?\s*Todo\s+en\s+orden\b|$)/gi;
   let m;
-  let headEnd = -1;
-  let headLine = '';
-  while ((m = reHead.exec(text))) {
-    headLine = String(m[2] || '').trim();
-    headEnd = m.index + m[0].length;
+  let chunk = '';
+  while ((m = re.exec(text))) chunk = m[1] || '';
+  if (!chunk) {
+    // Respaldo: encabezado y producto en la misma línea
+    const m2 = text.match(/(?:^|\n)[ \t]*Producto(?:s)?\b[^\n]*:\s*([^\n]+)/i);
+    if (m2 && m2[1]) {
+      const one = quitarPrefijoEmojiLinea(m2[1]);
+      if (one && !esLineaResiduoGuiaNoProducto(one)) return [one];
+    }
+    return [];
   }
-  if (headEnd < 0) return [];
-
-  let chunk = text.slice(headEnd);
-  // Cortar en "¿Todo en orden?" (con o sin ¿ y emoji)
-  const cutTodo = chunk.search(/\n[ \t]*¿?\s*Todo\s+en\s+orden\b/i);
-  if (cutTodo >= 0) chunk = chunk.slice(0, cutTodo);
-  // Cortar si viene otro pedido numerado
-  const cutNum = chunk.search(/\n[ \t]*\d+[ \t]*:\s*(\n|$)/);
-  if (cutNum >= 0) chunk = chunk.slice(0, cutNum);
 
   const out = [];
-  // Texto en la misma línea del encabezado (tras quitar "Producto" y el emoji)
-  let restHead = headLine.replace(/^(?:Producto|Productos)\b/i, '').trim();
-  restHead = restHead.replace(/^[🎯🎁]\uFE0F?/u, '').trim();
-  restHead = restHead.replace(/^:\s*/, '').trim();
-  if (restHead && !esLineaResiduoGuiaNoProducto(restHead)) out.push(restHead);
-
   for (const raw of chunk.split('\n')) {
     let L = String(raw || '').trim();
     if (!L) continue;
     L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
     L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
-    L = L.replace(/^[🎯🎁]\uFE0F?\s*/u, '').trim();
-    // Descartar restos de emoji / sustitutos huérfanos
+    L = quitarPrefijoEmojiLinea(L);
     if (!L || /^[\uD800-\uDFFF]+$/.test(L)) continue;
-    try {
-      if (/^\p{Extended_Pictographic}+$/u.test(L)) continue;
-    } catch (_e) {}
     if (esLineaResiduoGuiaNoProducto(L)) continue;
     out.push(L);
   }
   return out;
 }
 
-/** Líneas que nunca deben aparecer como producto (campos de la guía o basura). */
+/** Líneas que nunca deben aparecer como producto. */
 function esLineaResiduoGuiaNoProducto(linea) {
-  const L0 = String(linea || '').trim();
-  const L = L0
-    .replace(/^[*_~`•\u2022\-]+\s*/, '')
-    .replace(/^(?:📍|🙋|📲|💰|🚚|🕚|✅|🎯|🎁)\uFE0F?\s*/u, '')
-    .trim();
+  const L = quitarPrefijoEmojiLinea(
+    String(linea || '')
+      .trim()
+      .replace(/^[*_~`•\u2022\-]+\s*/, '')
+  );
   if (!L) return true;
   if (/^https?:/i.test(L)) return true;
   if (/^¿?\s*Todo\s+en\s+orden\b/i.test(L)) return true;
@@ -441,38 +443,49 @@ function esLineaResiduoGuiaNoProducto(linea) {
   if (/^Env[ií]o\b/i.test(L)) return true;
   if (/^Horario\b/i.test(L)) return true;
   if (/^\d+\s*:\s*$/.test(L)) return true;
-  if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|M[oó]vil|Valor|Total|A\s+recoger|Por\s+cobrar|Recaudo|Pago|N[uú]mero)\b/i.test(L)) {
+  if (
+    /^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|M[oó]vil|Valor|Total|A\s+recoger|Por\s+cobrar|Recaudo|Pago|N[uú]mero)\b/i.test(
+      L
+    )
+  ) {
     return true;
   }
+  if (/recibir[aá]\s+el\s+pedido/i.test(L)) return true;
   if (/^quien\s+recib/i.test(L)) return true;
+  if (/barrio\s+y\s+localidad/i.test(L)) return true;
   if (/^[\d\s+().-]{7,}$/.test(L) && L.replace(/\D/g, '').length >= 7) return true;
   if (/^\$?\s*[\d.,]+\s*$/.test(L)) return true;
   if (/^(?:Producto|Productos)\b/i.test(L) && !/:\s*\S/.test(L)) return true;
-  // Calles / direcciones típicas (no son el nombre del artículo)
-  if (/^(?:calle|carrera|cra\.?|cl\.?|kr\.?|av\.?|avenida|diagonal|transversal|tv\.?)\b/i.test(L)) {
+  if (/^(?:calle|carrera|cra\.?|cl\.?|kr\.?|av\.?|avenida|diagonal|transversal|tv\.?|conjunto)\b/i.test(L)) {
     return true;
   }
   return false;
 }
 
-/** Compat: filtros usados al mostrar/editar productos. */
 function esLineaPlantillaPedidoNoProducto(linea) {
   return esLineaResiduoGuiaNoProducto(linea);
 }
 
-/** Valor a cobrar: solo "Valor a pagar" / "Valor a recoger" / 💰 Valor. Nunca el $ del Envío. */
+/** Solo "Valor a pagar" / "Valor a recoger". Nunca el $12.000 del Envío. */
 function extraerValorAPagarDesdeBloque(bloque) {
-  const lines = String(bloque || '').replace(/\r\n/g, '\n').split('\n');
+  const text = String(bloque || '').replace(/\r\n/g, '\n');
+  // Preferencia estricta: Valor a pagar / Valor a recoger
+  let m = text.match(/Valor\s+a\s+pagar[^\n]*:\s*\n?[ \t]*([\d.,]+)/i);
+  if (m) {
+    const d = m[1].replace(/[^\d]/g, '');
+    if (d) return d;
+  }
+  m = text.match(/Valor\s+a\s+recoger[^\n]*:\s*\n?[ \t]*([\d.,]+)/i);
+  if (m) {
+    const d = m[1].replace(/[^\d]/g, '');
+    if (d) return d;
+  }
+  // 💰 Valor… (sin Envío)
+  const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const L = lines[i].trim();
-    if (!L) continue;
-    if (/^Env[ií]o\b/i.test(L) || /\bEnv[ií]o\b/i.test(L) && /🚚/.test(L)) continue;
-    const esEtiquetaValor =
-      /^(?:💰\s*)?Valor\s+a\s+pagar\b/i.test(L) ||
-      /^(?:💰\s*)?Valor\s+a\s+recoger\b/i.test(L) ||
-      (/^💰/.test(L) && /\bValor\b/i.test(L) && !/\bEnv[ií]o\b/i.test(L));
-    if (!esEtiquetaValor) continue;
-
+    if (/Env[ií]o/i.test(L)) continue;
+    if (!/💰/.test(L) || !/\bValor\b/i.test(L)) continue;
     const mMisma = L.match(/:\s*\$?\s*([\d.,]+)/);
     if (mMisma) {
       const d = mMisma[1].replace(/[^\d]/g, '');
@@ -481,8 +494,7 @@ function extraerValorAPagarDesdeBloque(bloque) {
     for (let j = i + 1; j < lines.length; j++) {
       const n = lines[j].trim();
       if (!n) continue;
-      if (/^(?:Env[ií]o|Horario|Producto|¿?\s*Todo\s+en\s+orden|📍|🙋|📲|💰)/i.test(n)) break;
-      if (/pagados|gracias|envio/i.test(n) && /\$/.test(n)) break;
+      if (/Env[ií]o|Horario|Producto|Todo\s+en\s+orden/i.test(n)) break;
       const d = n.replace(/[^\d]/g, '');
       if (d) return d;
       break;
@@ -490,6 +502,8 @@ function extraerValorAPagarDesdeBloque(bloque) {
   }
   return null;
 }
+
+const PARSER_PEDIDOS_BUILD = '20260825f';
 
 function lineasProductosPedidoNormalizadas(pedido) {
   return lineasProductosDesdeArray(pedido && pedido.productos);
@@ -2072,46 +2086,79 @@ async function procesarPedido() {
     );
   }
 
-  const pedidoId = generarPedidoId(numeroPedido);
+  const idxExistente =
+    numeroPedido != null
+      ? pedidos.findIndex((p) => Number(p.id) === Number(numeroPedido))
+      : -1;
+  const pedidoId = idxExistente >= 0 ? Number(numeroPedido) : generarPedidoId(numeroPedido);
   const mapUrlFinal = coords && coords.lat && coords.lng
     ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
     : mapUrl;
 
-  const baseNuevo = pedidoNuevoBase();
-  if (sesionUsuario) baseNuevo.createdBy = String(sesionUsuario.id);
-  const nuevoPedido = {
-    id: pedidoId,
-    nombre: campos.nombre,
-    telefono: campos.telefono,
-    telefonos: Array.isArray(campos.telefonos) ? campos.telefonos : [],
-    direccion: campos.direccion,
-    productos: Array.isArray(campos.productos) ? campos.productos : [],
-    valor: campos.valor || '0',
-    valorOriginal: null,
-    valorModificado: false,
-    textoOriginal: texto,
-    mapUrl: mapUrlFinal,
-    coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
-    ...baseNuevo
-  };
-  sincronizarAvisoTelefonoPedido(nuevoPedido);
-  pedidos.push(nuevoPedido);
+  const productosLimpios = Array.isArray(campos.productos) ? campos.productos : [];
+  const valorLimpio = String(campos.valor || '0').replace(/[^\d]/g, '') || '0';
+
+  let pedidoFinalId = pedidoId;
+  if (idxExistente >= 0) {
+    const prev = pedidos[idxExistente];
+    prev.nombre = campos.nombre;
+    prev.telefono = campos.telefono;
+    prev.telefonos = Array.isArray(campos.telefonos) ? campos.telefonos : [];
+    prev.direccion = campos.direccion;
+    prev.productos = productosLimpios;
+    prev.valor = valorLimpio;
+    prev.valorOriginal = null;
+    prev.valorModificado = false;
+    prev.textoOriginal = texto;
+    prev.mapUrl = mapUrlFinal;
+    prev.coords = coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null;
+    sincronizarAvisoTelefonoPedido(prev);
+    pedidoFinalId = prev.id;
+  } else {
+    const baseNuevo = pedidoNuevoBase();
+    if (sesionUsuario) baseNuevo.createdBy = String(sesionUsuario.id);
+    const nuevoPedido = {
+      id: pedidoId,
+      nombre: campos.nombre,
+      telefono: campos.telefono,
+      telefonos: Array.isArray(campos.telefonos) ? campos.telefonos : [],
+      direccion: campos.direccion,
+      productos: productosLimpios,
+      valor: valorLimpio,
+      valorOriginal: null,
+      valorModificado: false,
+      textoOriginal: texto,
+      mapUrl: mapUrlFinal,
+      coords: coords && coords.lat && coords.lng ? { lat: coords.lat, lng: coords.lng } : null,
+      ...baseNuevo
+    };
+    sincronizarAvisoTelefonoPedido(nuevoPedido);
+    pedidos.push(nuevoPedido);
+    pedidoFinalId = nuevoPedido.id;
+  }
 
   guardarPedidos();
   renderPedidos();
-  if (nuevoPedido.avisoTelefono) scrollToTopApp();
+  const pedidoAviso = pedidos.find((p) => Number(p.id) === Number(pedidoFinalId));
+  if (pedidoAviso && pedidoAviso.avisoTelefono) scrollToTopApp();
 
   setTimeout(() => {
     if (!mapa) return;
     if (!coords) return;
-    procesarURLMapaPedido(mapUrlFinal, pedidoId, campos.productos, () => {
+    procesarURLMapaPedido(mapUrlFinal, pedidoFinalId, productosLimpios, () => {
       ajustarVistaMapa();
       dibujarRutaEntreMarcadores();
     });
   }, 500);
 
   document.getElementById("textoPedido").value = "";
-  mostrarToast(`Pedido #${pedidoId} agregado exitosamente`, 'success');
+  const prodTxt = productosLimpios.length ? productosLimpios.join(' · ') : '(sin producto)';
+  const valorTxt = Number(valorLimpio || 0).toLocaleString('es-CO');
+  mostrarToast(
+    `Pedido #${pedidoFinalId} ${idxExistente >= 0 ? 'actualizado' : 'agregado'}. Productos: ${prodTxt}. Valor: $${valorTxt}`,
+    'success',
+    9000
+  );
   } finally {
     setAppLoadingVisible(false);
   }
