@@ -382,6 +382,9 @@ function esLineaPlantillaPedidoNoProducto(linea) {
     .trim()
     .replace(/^[*_~`•\u2022\-]+\s*/, '')
     .replace(/\s*[*_~`]+$/g, '')
+    .trim()
+    // Por si el emoji quedó delante o con selector de variación
+    .replace(/^(?:📍|🙋|📲|💰|🚚|🕚|✅|🎯|🎁)\uFE0F?\s*/u, '')
     .trim();
   if (!L) return true;
   if (/^https?:/i.test(L)) return true;
@@ -390,8 +393,7 @@ function esLineaPlantillaPedidoNoProducto(linea) {
   if (/^Env[ií]o\b/i.test(L)) return true;
   if (/^Horario\b/i.test(L)) return true;
   if (/^\d+\s*:\s*$/.test(L) || /^\d+\s*:\s*Para\b/i.test(L)) return true;
-  // Campos de la guía (no son productos)
-  if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
+  if (/^(?:📍|🙋|📲|💰)/u.test(String(linea || '').trim())) return true;
   if (
     /^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|M[oó]vil|Valor|Total|A\s+recoger|Por\s+cobrar|Recaudo|Pago)\b/i.test(
       L
@@ -400,6 +402,11 @@ function esLineaPlantillaPedidoNoProducto(linea) {
     return true;
   }
   if (/^N[uú]mero\s+de\s+celular\b/i.test(L)) return true;
+  if (/^quien\s+recib/i.test(L)) return true;
+  if (/^conjunto\b/i.test(L) && /\b(soacha|bogot|barrio|localidad)\b/i.test(L)) return true;
+  // Solo un teléfono o solo un monto → no es nombre de producto
+  if (/^[\d\s+().-]{7,}$/.test(L) && L.replace(/\D/g, '').length >= 7) return true;
+  if (/^\$?\s*[\d.,]+\s*$/.test(L)) return true;
   // Encabezado de productos (sin ítem en la misma línea)
   if (/^Producto(?:s)?\b/i.test(L)) {
     if (!/:\s*\S/.test(L)) return true;
@@ -409,53 +416,54 @@ function esLineaPlantillaPedidoNoProducto(linea) {
 }
 
 /**
- * Extrae solo las líneas de producto tras el encabezado Producto/Productos.
- * Evita el patrón "Pedido:" que coincidía con "Para agilizar tu pedido…datos:" y tragaba toda la guía.
+ * Extrae solo las líneas de producto tras el ÚLTIMO encabezado Producto/Productos.
+ * No usa "Pedido:" (coincidía con "Para agilizar tu pedido…datos:" y tragaba la guía).
  */
 function extraerProductosSoloDelBloque(bloque) {
-  const lines = String(bloque || '').split('\n');
+  const text = String(bloque || '');
+  const lines = text.split('\n');
+
+  // Índice del último encabezado "Producto" / "Productos" (con o sin emoji/dos puntos)
+  let idxHead = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*Producto(?:s)?\b/i.test(lines[i])) idxHead = i;
+  }
+  if (idxHead < 0) return [];
+
   const esCorte = (raw) => {
-    const L = String(raw || '').trim();
-    if (!L) return false;
-    if (esLineaPlantillaPedidoNoProducto(L)) return true;
-    if (/^(?:📍|🙋|📲|💰)/u.test(L)) return true;
-    if (/^(?:Direcci[oó]n|Ubicaci[oó]n|Nombre|Tel[ée]fono|Celular|WhatsApp|Valor|Total|Env[ií]o|Horario)\b/i.test(L)) {
-      return true;
-    }
-    if (/^¿?\s*Todo\s+en\s+orden\b/i.test(L)) return true;
-    if (/^Para\s+agilizar\b/i.test(L)) return true;
+    const rawT = String(raw || '').trim();
+    if (!rawT) return false;
+    if (esLineaPlantillaPedidoNoProducto(rawT)) return true;
+    if (/^(?:📍|🙋|📲|💰|Env[ií]o\b|Horario\b)/u.test(rawT)) return true;
+    if (/^¿?\s*Todo\s+en\s+orden\b/i.test(rawT)) return true;
+    if (/^Para\s+agilizar\b/i.test(rawT)) return true;
+    if (/^\d+\s*:\s*$/.test(rawT)) return true;
     return false;
   };
+
   const limpiarLineaProducto = (raw) => {
     let L = String(raw || '').trim();
     if (!L) return '';
     L = L.replace(/^\*+\s*/, '').replace(/\s*\*+$/, '');
     L = L.replace(/^[•\u2022\-\*]\s*/, '').replace(/^\d+[\.)]\s+/, '').trim();
-    if (!L || esLineaPlantillaPedidoNoProducto(L) || esCorte(L)) return '';
+    if (!L || esLineaPlantillaPedidoNoProducto(L)) return '';
     return L;
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    // Encabezado: "Producto:", "Producto 🎯:", "Productos", etc. (no "pedido" genérico)
-    if (!/^Producto(?:s)?\b/i.test(line)) continue;
-
-    const out = [];
-    // Ítems en la misma línea tras "Producto…:"
-    const mMisma = line.match(/^Producto(?:s)?\b[^:]*:\s*(.+)$/i);
-    if (mMisma && mMisma[1] && mMisma[1].trim()) {
-      const mismo = limpiarLineaProducto(mMisma[1]);
-      if (mismo) out.push(mismo);
-    }
-
-    for (let j = i + 1; j < lines.length; j++) {
-      if (esCorte(lines[j])) break;
-      const L = limpiarLineaProducto(lines[j]);
-      if (L) out.push(L);
-    }
-    if (out.length) return out;
+  const out = [];
+  const head = lines[idxHead].trim();
+  const mMisma = head.match(/^Producto(?:s)?\b[^:]*:\s*(.+)$/i);
+  if (mMisma && mMisma[1] && mMisma[1].trim()) {
+    const mismo = limpiarLineaProducto(mMisma[1]);
+    if (mismo) out.push(mismo);
   }
-  return [];
+
+  for (let j = idxHead + 1; j < lines.length; j++) {
+    if (esCorte(lines[j])) break;
+    const L = limpiarLineaProducto(lines[j]);
+    if (L) out.push(L);
+  }
+  return out;
 }
 
 function lineasProductosPedidoNormalizadas(pedido) {
@@ -1859,11 +1867,15 @@ function extraerCamposPedido(bloque) {
   const finValor =
     `(?=Env[ií]o|Horario|Producto|¿Todo|Para agilizar|📍|${_RE_EMOJI_NOMBRE}|📲|💰|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)`;
   let valor = '0';
+  // Priorizar "Valor a pagar" / "Valor a recoger"; nunca tomar el $ del Envío.
   const valPatrones = [
-    // No tratar 💰 Envío como valor a recoger (el domicilio no es lo que cobras al cliente).
+    new RegExp(
+      `(?:Valor\\s+a\\s+pagar|Valor\\s+a\\s+recoger)[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`,
+      'i'
+    ),
     new RegExp(`💰(?!\\s*Env[ií]o\\b)[^:\\n]*:\\s*([\\s\\S]*?)${finValor}`, 'iu'),
     new RegExp(
-      '(?:Valor\\s+a\\s+pagar|Valor\\s+a\\s+recoger|A\\s+recoger|Valor(?!\\s+(?:del|de)\\s+env[ií]o)|Total|Por\\s+cobrar|Pago|Recaudo)[^:\\n]*:\\s*([\\s\\S]*?)' +
+      '(?:A\\s+recoger|Valor(?!\\s+(?:del|de)\\s+env[ií]o)|Total|Por\\s+cobrar|Recaudo)[^:\\n]*:\\s*([\\s\\S]*?)' +
         finValor,
       'i'
     ),
@@ -1872,6 +1884,7 @@ function extraerCamposPedido(bloque) {
     const m = b.match(re);
     if (m && m[1]) {
       const raw = m[1].trim().split('\n')[0].trim();
+      if (/env[ií]o|pagados|gracias/i.test(raw)) continue;
       const soloDigitos = raw.replace(/[^\d]/g, '');
       if (soloDigitos) {
         valor = soloDigitos;
@@ -1884,32 +1897,8 @@ function extraerCamposPedido(bloque) {
     if (respaldo != null) valor = respaldo;
   }
 
-  let productos = [];
-  // Primero por líneas (no tragar la guía completa). El viejo patrón Pedido: coincidía
-  // con "Para agilizar tu pedido…datos:" y metía dirección/nombre/teléfono en productos.
-  productos = extraerProductosSoloDelBloque(b);
-  if (productos.length === 0) {
-    const prodFin =
-      '(?=(?:\\*|\\s)*¿?\\s*Todo\\s+en\\s+orden|Para agilizar|Env[ií]o|Horario|📍|📲|💰|' +
-      _RE_EMOJI_NOMBRE +
-      '|Direcci[oó]n\\b|Ubicaci[oó]n\\b|Nombre\\b|Tel[ée]fono\\b|Celular\\b|Valor\\b|https?:|\\n\\s*\\d+:\\s*\\n?\\s*Para|$)';
-    const prodPatrones = [
-      new RegExp(`Producto\\s*🎁[^:\\n]*:\\s*([^\\n]+)`, 'i'),
-      new RegExp(`Producto\\s*🎯[^:\\n]*:\\s*([^\\n]+)`, 'i'),
-      new RegExp(`Producto(?:s)?[^:\\n]*:\\s*([\\s\\S]*?)${prodFin}`, 'iu'),
-    ];
-    for (const re of prodPatrones) {
-      const m = b.match(re);
-      if (m && m[1]) {
-        productos = m[1]
-          .trim()
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => l && !esLineaPlantillaPedidoNoProducto(l));
-        if (productos.length) break;
-      }
-    }
-  }
+  // Solo productos tras el encabezado Producto (nunca la guía completa).
+  const productos = extraerProductosSoloDelBloque(b);
 
   return { direccion, nombre, telefono, telefonos, valor, productos };
 }

@@ -1,10 +1,9 @@
 /* Service Worker — Delivery (modo offline + updates suaves) */
-const CACHE_NAME = 'delivery-static-v3';
+const CACHE_NAME = 'delivery-static-v4';
 const PRECACHE = [
   './',
   './index.html',
   './style.css',
-  './app.js',
   './manifest.webmanifest',
   './icon.svg',
 ];
@@ -13,8 +12,6 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)).catch(() => undefined)
   );
-  // No skipWaiting: el SW nuevo espera a que se cierre/recargue la pestaña.
-  // Así se evita congelar la app a mitad de uso al desplegar una versión.
 });
 
 self.addEventListener('activate', (event) => {
@@ -23,7 +20,6 @@ self.addEventListener('activate', (event) => {
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
     )
   );
-  // No clients.claim(): no tomar control de pestañas abiertas a la fuerza.
 });
 
 self.addEventListener('message', (event) => {
@@ -39,10 +35,22 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   const sameOrigin = url.origin === self.location.origin;
 
-  // API: no cachear (offline se resuelve con localStorage en la app)
   if (sameOrigin && url.pathname.startsWith('/api/')) return;
 
-  // CDN: cache-first
+  // app.js siempre de red si hay conexión (evita productos/parser viejos en caché)
+  if (sameOrigin && /\/app\.js$/i.test(url.pathname)) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(req, copy)).catch(() => undefined);
+          return res;
+        })
+        .catch(() => caches.match(req).then((c) => c || Response.error()))
+    );
+    return;
+  }
+
   if (!sameOrigin) {
     event.respondWith(
       caches.match(req).then((cached) => {
@@ -59,8 +67,6 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // App shell (HTML/JS/CSS): network-first para no servir JS viejo mezclado
-  // y evitar pantallas congeladas tras un deploy.
   const isAppShell =
     req.mode === 'navigate' ||
     url.pathname.endsWith('/') ||
