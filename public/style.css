@@ -2771,3 +2771,122 @@ button i,
 .historial-dia-metric--money strong {
   color: var(--triad-a-dark, #1e3a5f);
 }
+
+.historial-retencion-box {
+  background: #f7f9fb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.historial-retencion-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.historial-retencion-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.historial-retencion-input {
+  width: 88px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 15px;
+}
+
+.historial-retencion-unidad {
+  font-size: 14px;
+  color: #4b5563;
+}
+
+.historial-retencion-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.historial-mensajeros {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.historial-mensajeros-titulo {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+.historial-mensajeros-vacio {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.historial-mensajero-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.historial-mensajero-nombre {
+  margin: 0 0 6px;
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.historial-mensajero-meta {
+  font-weight: 500;
+  color: #6b7280;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.historial-mensajero-pedidos {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.45;
+}
+
+.historial-mensajero-pedidos li {
+  margin-bottom: 2px;
+}
+
+.historial-pedido-id {
+  font-weight: 600;
+  color: var(--triad-a-dark, #1e3a5f);
+}
+
+.historial-pedido-estado {
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 4px;
+  color: #6b7280;
+}
+
+.historial-pedido-estado--entregado {
+  color: #15803d;
+}
+
+.historial-pedido-estado--devuelto {
+  color: #c2410c;
+}
+
+.historial-pedido-estado--sin_entregar {
+  color: #b45309;
+}

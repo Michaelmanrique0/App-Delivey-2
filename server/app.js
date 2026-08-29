@@ -402,6 +402,10 @@ app.get('/api/me', asyncHandler(authMiddleware), (req, res) => {
 
 // --- Historial diario de entregas (admin) ---
 
+const HISTORIAL_CONFIG_META = 'historial_entregas_config_v1';
+const HISTORIAL_DIAS_META = 'historial_entregas_v1';
+const HISTORIAL_RETENCION_DEFAULT = 30;
+
 function parseHistorialDias(raw) {
   try {
     const arr = JSON.parse(raw || '[]');
@@ -411,10 +415,72 @@ function parseHistorialDias(raw) {
   }
 }
 
+function parseHistorialConfig(raw) {
+  try {
+    const o = JSON.parse(raw || '{}');
+    if (!o || typeof o !== 'object') return { retencionDias: HISTORIAL_RETENCION_DEFAULT };
+    let dias = Number(o.retencionDias);
+    if (!Number.isFinite(dias)) dias = HISTORIAL_RETENCION_DEFAULT;
+    // 0 = no borrar automáticamente; máximo 3650 (~10 años)
+    dias = Math.max(0, Math.min(3650, Math.floor(dias)));
+    return { retencionDias: dias };
+  } catch (_e) {
+    return { retencionDias: HISTORIAL_RETENCION_DEFAULT };
+  }
+}
+
+/** Conserva días cuya fecha >= hoy - retencionDias. Si retencionDias es 0, no elimina. */
+function filtrarDiasPorRetencion(dias, retencionDias) {
+  const n = Number(retencionDias);
+  if (!Number.isFinite(n) || n <= 0) return Array.isArray(dias) ? dias : [];
+  const hoy = new Date();
+  hoy.setHours(12, 0, 0, 0);
+  hoy.setDate(hoy.getDate() - Math.floor(n));
+  const y = hoy.getFullYear();
+  const m = String(hoy.getMonth() + 1).padStart(2, '0');
+  const day = String(hoy.getDate()).padStart(2, '0');
+  const limite = `${y}-${m}-${day}`;
+  return (dias || []).filter((d) => d && String(d.fecha || '') >= limite);
+}
+
+function normalizarPedidoHistorialSnap(p) {
+  if (!p || typeof p !== 'object') return null;
+  const id = Number(p.id);
+  if (!Number.isFinite(id)) return null;
+  const estado = String(p.estado || '').trim();
+  const estadosOk = new Set(['entregado', 'devuelto', 'sin_entregar']);
+  return {
+    id,
+    nombre: String(p.nombre || '').trim().slice(0, 120),
+    estado: estadosOk.has(estado) ? estado : 'entregado',
+    montoNequi: Math.max(0, Number(p.montoNequi) || 0),
+    montoDaviplata: Math.max(0, Number(p.montoDaviplata) || 0),
+    montoEfectivo: Math.max(0, Number(p.montoEfectivo) || 0),
+  };
+}
+
+function normalizarMensajeroHistorial(m) {
+  if (!m || typeof m !== 'object') return null;
+  const userId =
+    m.userId == null || String(m.userId).trim() === '' ? null : String(m.userId).trim();
+  const pedidos = Array.isArray(m.pedidos)
+    ? m.pedidos.map(normalizarPedidoHistorialSnap).filter(Boolean)
+    : [];
+  return {
+    userId,
+    nombre: String(m.nombre || (userId ? `Usuario ${userId}` : 'Sin asignar')).trim().slice(0, 80),
+    entregados: Math.max(0, Number(m.entregados) || 0),
+    pedidos,
+  };
+}
+
 function normalizarDiaHistorial(d) {
   if (!d || typeof d !== 'object') return null;
   const fecha = String(d.fecha || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return null;
+  const porMensajero = Array.isArray(d.porMensajero)
+    ? d.porMensajero.map(normalizarMensajeroHistorial).filter(Boolean)
+    : [];
   return {
     fecha,
     entregados: Math.max(0, Number(d.entregados) || 0),
@@ -423,20 +489,62 @@ function normalizarDiaHistorial(d) {
     pagadosNequi: Math.max(0, Number(d.pagadosNequi) || 0),
     recogidoTotal: Math.max(0, Number(d.recogidoTotal) || 0),
     recogidoEfectivo: Math.max(0, Number(d.recogidoEfectivo) || 0),
+    recogidoNequi: Math.max(0, Number(d.recogidoNequi) || 0),
+    recogidoDaviplata: Math.max(0, Number(d.recogidoDaviplata) || 0),
+    porMensajero,
     actualizadoEn: Number(d.actualizadoEn) || Math.floor(Date.now() / 1000),
   };
 }
+
+async function cargarHistorialConfig() {
+  return parseHistorialConfig(await getMeta(HISTORIAL_CONFIG_META));
+}
+
+async function cargarHistorialDiasFiltrados() {
+  const cfg = await cargarHistorialConfig();
+  const dias = parseHistorialDias(await getMeta(HISTORIAL_DIAS_META))
+    .map(normalizarDiaHistorial)
+    .filter(Boolean);
+  const filtrados = filtrarDiasPorRetencion(dias, cfg.retencionDias).sort((a, b) =>
+    b.fecha.localeCompare(a.fecha)
+  );
+  if (filtrados.length !== dias.length) {
+    await setMeta(HISTORIAL_DIAS_META, JSON.stringify(filtrados));
+  }
+  return { dias: filtrados, config: cfg };
+}
+
+app.get(
+  '/api/historial-entregas/config',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const config = await cargarHistorialConfig();
+    res.json({ config });
+  })
+);
+
+app.put(
+  '/api/historial-entregas/config',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const config = parseHistorialConfig(
+      JSON.stringify({ retencionDias: req.body?.retencionDias })
+    );
+    await setMeta(HISTORIAL_CONFIG_META, JSON.stringify(config));
+    const { dias } = await cargarHistorialDiasFiltrados();
+    res.json({ ok: true, config, dias });
+  })
+);
 
 app.get(
   '/api/historial-entregas',
   asyncHandler(authMiddleware),
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    const dias = parseHistorialDias(await getMeta('historial_entregas_v1'))
-      .map(normalizarDiaHistorial)
-      .filter(Boolean)
-      .sort((a, b) => b.fecha.localeCompare(a.fecha));
-    res.json({ dias });
+    const { dias, config } = await cargarHistorialDiasFiltrados();
+    res.json({ dias, config });
   })
 );
 
@@ -450,12 +558,13 @@ app.put(
       res.status(400).json({ error: 'Se esperaba dias: []' });
       return;
     }
-    const dias = incoming
-      .map(normalizarDiaHistorial)
-      .filter(Boolean)
-      .sort((a, b) => b.fecha.localeCompare(a.fecha));
-    await setMeta('historial_entregas_v1', JSON.stringify(dias));
-    res.json({ ok: true, dias });
+    const cfg = await cargarHistorialConfig();
+    const dias = filtrarDiasPorRetencion(
+      incoming.map(normalizarDiaHistorial).filter(Boolean),
+      cfg.retencionDias
+    ).sort((a, b) => b.fecha.localeCompare(a.fecha));
+    await setMeta(HISTORIAL_DIAS_META, JSON.stringify(dias));
+    res.json({ ok: true, dias, config: cfg });
   })
 );
 
@@ -469,14 +578,17 @@ app.post(
       res.status(400).json({ error: 'Día de historial inválido' });
       return;
     }
-    const actuales = parseHistorialDias(await getMeta('historial_entregas_v1'))
+    const cfg = await cargarHistorialConfig();
+    const actuales = parseHistorialDias(await getMeta(HISTORIAL_DIAS_META))
       .map(normalizarDiaHistorial)
       .filter(Boolean);
     const sinEste = actuales.filter((d) => d.fecha !== dia.fecha);
     dia.actualizadoEn = Math.floor(Date.now() / 1000);
-    const dias = [...sinEste, dia].sort((a, b) => b.fecha.localeCompare(a.fecha));
-    await setMeta('historial_entregas_v1', JSON.stringify(dias));
-    res.json({ ok: true, dia });
+    const dias = filtrarDiasPorRetencion([...sinEste, dia], cfg.retencionDias).sort((a, b) =>
+      b.fecha.localeCompare(a.fecha)
+    );
+    await setMeta(HISTORIAL_DIAS_META, JSON.stringify(dias));
+    res.json({ ok: true, dia, config: cfg });
   })
 );
 

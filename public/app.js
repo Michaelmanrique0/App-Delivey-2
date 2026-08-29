@@ -38,6 +38,8 @@ const VISTA_APP_USER_SESSION_KEY = 'deliveryVistaAppUserId';
 const VISTA_APP_USUARIOS_ROLES = 'usuarios-roles';
 const VISTA_APP_HISTORIAL_ENTREGAS = 'historial-entregas';
 const HISTORIAL_ENTREGAS_CACHE_KEY = 'deliveryHistorialEntregas_v1';
+const HISTORIAL_RETENCION_CACHE_KEY = 'deliveryHistorialRetencionDias_v1';
+const HISTORIAL_RETENCION_DEFAULT_DIAS = 30;
 /** Mismo id que el `<style>` inyectado en `index.html` antes del primer pintado. */
 const PRE_RESTORE_USUARIOS_ROLES_STYLE_ID = 'preRestoreUsuariosRolesStyle';
 let sesionUsuario = null;
@@ -8306,6 +8308,19 @@ function formatearFechaHistorialEs(fechaIso) {
   return `${Number(m[3])} de ${mes} de ${m[1]}`;
 }
 
+function estadoPedidoParaHistorial(p) {
+  if (!p) return 'entregado';
+  if (p.cancelado || (p.noEntregado && p.envioRecogido)) return 'devuelto';
+  if (p.noEntregado) return 'sin_entregar';
+  return 'entregado';
+}
+
+function etiquetaEstadoHistorial(estado) {
+  if (estado === 'devuelto') return 'Devuelto';
+  if (estado === 'sin_entregar') return 'Sin entregar';
+  return 'Entregado';
+}
+
 function resumenHistorialDesdePedidosPorFecha(fecha) {
   const delDia = pedidos.filter((p) => p && String(p.fechaOperacion || '') === String(fecha));
   const entregadosLista = delDia.filter((p) => p.entregado && !p.noEntregado && !p.cancelado);
@@ -8316,6 +8331,41 @@ function resumenHistorialDesdePedidosPorFecha(fecha) {
   const pagadosNequi = entregadosLista.filter((p) => Number(p.montoNequi || 0) > 0).length;
   const recogidoTotal = entregadosLista.reduce((s, p) => s + obtenerValorAReclamarPedido(p), 0);
   const recogidoEfectivo = entregadosLista.reduce((s, p) => s + Number(p.montoEfectivo || 0), 0);
+  const recogidoNequi = entregadosLista.reduce((s, p) => s + Number(p.montoNequi || 0), 0);
+  const recogidoDaviplata = entregadosLista.reduce((s, p) => s + Number(p.montoDaviplata || 0), 0);
+
+  const porMap = new Map();
+  for (const p of delDia) {
+    const uid = uidPedidoAsignado(p) || '';
+    const key = uid || '__sin__';
+    if (!porMap.has(key)) {
+      const nombre =
+        uid
+          ? nombreMensajeroPorId(uid) || `Mensajero ${uid}`
+          : 'Sin asignar';
+      porMap.set(key, {
+        userId: uid || null,
+        nombre,
+        entregados: 0,
+        pedidos: [],
+      });
+    }
+    const bucket = porMap.get(key);
+    const estado = estadoPedidoParaHistorial(p);
+    if (estado === 'entregado') bucket.entregados += 1;
+    bucket.pedidos.push({
+      id: Number(p.id),
+      nombre: String(p.nombre || '').trim(),
+      estado,
+      montoNequi: Number(p.montoNequi || 0),
+      montoDaviplata: Number(p.montoDaviplata || 0),
+      montoEfectivo: Number(p.montoEfectivo || 0),
+    });
+  }
+  const porMensajero = [...porMap.values()].sort((a, b) =>
+    String(a.nombre).localeCompare(String(b.nombre), 'es')
+  );
+
   return {
     fecha: String(fecha),
     entregados: entregadosLista.length,
@@ -8324,6 +8374,9 @@ function resumenHistorialDesdePedidosPorFecha(fecha) {
     pagadosNequi,
     recogidoTotal,
     recogidoEfectivo,
+    recogidoNequi,
+    recogidoDaviplata,
+    porMensajero,
     actualizadoEn: Math.floor(Date.now() / 1000),
   };
 }
@@ -8345,6 +8398,50 @@ function guardarHistorialEntregasCacheLocal(dias) {
   } catch (_e) {}
 }
 
+function cargarRetencionHistorialLocal() {
+  try {
+    const n = Number(localStorage.getItem(HISTORIAL_RETENCION_CACHE_KEY));
+    if (!Number.isFinite(n)) return HISTORIAL_RETENCION_DEFAULT_DIAS;
+    return Math.max(0, Math.min(3650, Math.floor(n)));
+  } catch (_e) {
+    return HISTORIAL_RETENCION_DEFAULT_DIAS;
+  }
+}
+
+function guardarRetencionHistorialLocal(dias) {
+  try {
+    localStorage.setItem(HISTORIAL_RETENCION_CACHE_KEY, String(Math.max(0, Math.floor(Number(dias) || 0))));
+  } catch (_e) {}
+}
+
+function filtrarDiasHistorialPorRetencion(dias, retencionDias) {
+  const n = Number(retencionDias);
+  if (!Number.isFinite(n) || n <= 0) return Array.isArray(dias) ? dias : [];
+  const hoy = new Date();
+  hoy.setHours(12, 0, 0, 0);
+  hoy.setDate(hoy.getDate() - Math.floor(n));
+  const y = hoy.getFullYear();
+  const m = String(hoy.getMonth() + 1).padStart(2, '0');
+  const day = String(hoy.getDate()).padStart(2, '0');
+  const limite = `${y}-${m}-${day}`;
+  return (dias || []).filter((d) => d && String(d.fecha || '') >= limite);
+}
+
+function diaHistorialTieneDatos(d) {
+  if (!d) return false;
+  return (
+    Number(d.entregados || 0) > 0 ||
+    Number(d.devueltos || 0) > 0 ||
+    Number(d.sinEntregar || 0) > 0 ||
+    Number(d.pagadosNequi || 0) > 0 ||
+    Number(d.recogidoTotal || 0) > 0 ||
+    Number(d.recogidoEfectivo || 0) > 0 ||
+    Number(d.recogidoNequi || 0) > 0 ||
+    Number(d.recogidoDaviplata || 0) > 0 ||
+    (Array.isArray(d.porMensajero) && d.porMensajero.length > 0)
+  );
+}
+
 function fusionarHistorialDias(guardados, desdePedidos) {
   const map = new Map();
   for (const d of guardados || []) {
@@ -8356,17 +8453,7 @@ function fusionarHistorialDias(guardados, desdePedidos) {
     map.set(String(d.fecha), { ...d });
   }
   return [...map.values()]
-    .filter((d) => {
-      if (!d) return false;
-      return (
-        Number(d.entregados || 0) > 0 ||
-        Number(d.devueltos || 0) > 0 ||
-        Number(d.sinEntregar || 0) > 0 ||
-        Number(d.pagadosNequi || 0) > 0 ||
-        Number(d.recogidoTotal || 0) > 0 ||
-        Number(d.recogidoEfectivo || 0) > 0
-      );
-    })
+    .filter(diaHistorialTieneDatos)
     .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
 }
 
@@ -8384,9 +8471,12 @@ function reconstruirHistorialDesdePedidosActuales() {
 
 async function sincronizarHistorialPorFecha(fecha) {
   if (!fecha || !appEstaOnline() || !getAuthToken()) {
-    const local = fusionarHistorialDias(
-      cargarHistorialEntregasCacheLocal(),
-      reconstruirHistorialDesdePedidosActuales()
+    const local = filtrarDiasHistorialPorRetencion(
+      fusionarHistorialDias(
+        cargarHistorialEntregasCacheLocal(),
+        reconstruirHistorialDesdePedidosActuales()
+      ),
+      cargarRetencionHistorialLocal()
     );
     guardarHistorialEntregasCacheLocal(local);
     return;
@@ -8397,13 +8487,19 @@ async function sincronizarHistorialPorFecha(fecha) {
       method: 'POST',
       body: JSON.stringify({ dia }),
     });
-    const local = fusionarHistorialDias(cargarHistorialEntregasCacheLocal(), [dia]);
+    const local = filtrarDiasHistorialPorRetencion(
+      fusionarHistorialDias(cargarHistorialEntregasCacheLocal(), [dia]),
+      cargarRetencionHistorialLocal()
+    );
     guardarHistorialEntregasCacheLocal(local);
   } catch (e) {
     console.error(e);
-    const local = fusionarHistorialDias(
-      cargarHistorialEntregasCacheLocal(),
-      reconstruirHistorialDesdePedidosActuales()
+    const local = filtrarDiasHistorialPorRetencion(
+      fusionarHistorialDias(
+        cargarHistorialEntregasCacheLocal(),
+        reconstruirHistorialDesdePedidosActuales()
+      ),
+      cargarRetencionHistorialLocal()
     );
     guardarHistorialEntregasCacheLocal(local);
   }
@@ -8429,8 +8525,52 @@ function vistaAppSesionEsHistorialEntregas() {
   }
 }
 
+function htmlBloquePorMensajeroHistorial(dia) {
+  const lista = Array.isArray(dia.porMensajero) ? dia.porMensajero : [];
+  if (lista.length === 0) {
+    return '<p class="historial-mensajeros-vacio">Sin detalle de repartidores para este día.</p>';
+  }
+  return (
+    `<div class="historial-mensajeros">` +
+    `<h4 class="historial-mensajeros-titulo">Por repartidor</h4>` +
+    lista
+      .map((m) => {
+        const pedidosHtml = (m.pedidos || [])
+          .map((p) => {
+            const nom = p.nombre ? ` — ${escapeHtmlTexto(p.nombre)}` : '';
+            return (
+              `<li><span class="historial-pedido-id">#${escapeHtmlTexto(String(p.id))}</span>` +
+              `${nom}` +
+              ` <span class="historial-pedido-estado historial-pedido-estado--${escapeHtmlAttr(p.estado)}">${escapeHtmlTexto(etiquetaEstadoHistorial(p.estado))}</span></li>`
+            );
+          })
+          .join('');
+        return (
+          `<div class="historial-mensajero-card">` +
+          `<p class="historial-mensajero-nombre"><i class="fa-solid fa-motorcycle" aria-hidden="true"></i> ${escapeHtmlTexto(m.nombre || 'Sin asignar')}` +
+          ` <span class="historial-mensajero-meta">${Number(m.entregados || 0)} entregado(s)</span></p>` +
+          `<ul class="historial-mensajero-pedidos">${pedidosHtml || '<li>Sin pedidos</li>'}</ul>` +
+          `</div>`
+        );
+      })
+      .join('') +
+    `</div>`
+  );
+}
+
 function htmlTarjetaHistorialDia(dia) {
   const fmt = (n) => Number(n || 0).toLocaleString('es-CO');
+  const nequi = Number(dia.recogidoNequi || 0);
+  const davi = Number(dia.recogidoDaviplata || 0);
+  let moneyExtras = '';
+  if (nequi > 0) {
+    moneyExtras +=
+      `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido por Nequi</span><strong>$${fmt(nequi)}</strong></div>`;
+  }
+  if (davi > 0) {
+    moneyExtras +=
+      `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido por Daviplata</span><strong>$${fmt(davi)}</strong></div>`;
+  }
   return (
     `<article class="historial-dia-card">` +
     `<h3 class="historial-dia-fecha">${escapeHtmlTexto(formatearFechaHistorialEs(dia.fecha))}</h3>` +
@@ -8442,27 +8582,87 @@ function htmlTarjetaHistorialDia(dia) {
     `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Pagados por Nequi</span><strong>${fmt(dia.pagadosNequi)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido total</span><strong>$${fmt(dia.recogidoTotal)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido en efectivo</span><strong>$${fmt(dia.recogidoEfectivo)}</strong></div>` +
-    `</div></article>`
+    moneyExtras +
+    `</div>` +
+    htmlBloquePorMensajeroHistorial(dia) +
+    `</article>`
   );
 }
 
-async function refrescarHistorialEntregasUI() {
+function pintarConfigRetencionHistorialUI(retencionDias) {
+  const input = document.getElementById('historialRetencionDias');
+  if (input) input.value = String(retencionDias);
+  const hint = document.getElementById('historialRetencionHint');
+  if (!hint) return;
+  const n = Number(retencionDias);
+  if (!Number.isFinite(n) || n <= 0) {
+    hint.textContent = 'Sin límite: el historial no se borrará automáticamente.';
+  } else {
+    hint.textContent = `Los días con más de ${n} día(s) de antigüedad se eliminarán solos.`;
+  }
+}
+
+async function guardarRetencionHistorialDesdeUI() {
+  const input = document.getElementById('historialRetencionDias');
+  let n = Number(input && input.value);
+  if (!Number.isFinite(n) || n < 0) n = HISTORIAL_RETENCION_DEFAULT_DIAS;
+  n = Math.max(0, Math.min(3650, Math.floor(n)));
+  guardarRetencionHistorialLocal(n);
+  pintarConfigRetencionHistorialUI(n);
+  try {
+    if (appEstaOnline() && getAuthToken() && esSesionAdmin()) {
+      const data = await apiJson('/api/historial-entregas/config', {
+        method: 'PUT',
+        body: JSON.stringify({ retencionDias: n }),
+      });
+      if (Array.isArray(data.dias)) {
+        guardarHistorialEntregasCacheLocal(data.dias);
+      }
+      if (data.config && data.config.retencionDias != null) {
+        guardarRetencionHistorialLocal(data.config.retencionDias);
+        pintarConfigRetencionHistorialUI(data.config.retencionDias);
+      }
+    }
+    mostrarToast('Tiempo de conservación del historial guardado', 'success');
+    await refrescarHistorialEntregasUI({ omitirCargaConfig: true });
+  } catch (e) {
+    mostrarToast(String(e.message || e), 'error');
+  }
+}
+
+async function refrescarHistorialEntregasUI(opts) {
   const host = document.getElementById('historialEntregasLista');
   if (!host) return;
   host.innerHTML = '<p class="historial-entregas-cargando">Cargando historial…</p>';
+  if (!listaMensajerosCache.length && esSesionAdmin()) {
+    try {
+      await cargarMensajerosParaAsignacion();
+    } catch (_e) {}
+  }
   const sellados = asegurarFechasOperacionPedidosFinalizados();
   let guardados = cargarHistorialEntregasCacheLocal();
+  let retencion = cargarRetencionHistorialLocal();
   try {
     if (appEstaOnline() && getAuthToken()) {
       const data = await apiJson('/api/historial-entregas', { method: 'GET' });
       if (Array.isArray(data.dias)) guardados = data.dias;
+      if (data.config && data.config.retencionDias != null) {
+        retencion = Number(data.config.retencionDias);
+        guardarRetencionHistorialLocal(retencion);
+      }
     }
   } catch (e) {
     console.error(e);
   }
+  if (!opts || !opts.omitirCargaConfig) {
+    pintarConfigRetencionHistorialUI(retencion);
+  }
   // Actualizar días presentes en pedidos actuales y persistir
   const desdePedidos = reconstruirHistorialDesdePedidosActuales();
-  const fusion = fusionarHistorialDias(guardados, desdePedidos);
+  let fusion = filtrarDiasHistorialPorRetencion(
+    fusionarHistorialDias(guardados, desdePedidos),
+    retencion
+  );
   guardarHistorialEntregasCacheLocal(fusion);
   if (appEstaOnline() && getAuthToken() && esSesionAdmin()) {
     try {
@@ -8505,6 +8705,7 @@ async function mostrarUiPaginaHistorialEntregas() {
     page.style.display = 'block';
     page.removeAttribute('aria-hidden');
   }
+  pintarConfigRetencionHistorialUI(cargarRetencionHistorialLocal());
   await refrescarHistorialEntregasUI();
   scrollToTopApp();
 }
