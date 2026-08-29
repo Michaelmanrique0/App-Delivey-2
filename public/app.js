@@ -8269,6 +8269,32 @@ function sellarFechaOperacionPedido(pedido) {
   if (!pedido.fechaOperacion) pedido.fechaOperacion = fechaOperacionHoyLocal();
 }
 
+/** Pedidos que entran al historial del día (ya finalizados). */
+function pedidoEstaFinalizadoParaHistorial(pedido) {
+  if (!pedido) return false;
+  if (pedido.cancelado) return true;
+  if (pedido.entregado) return true; // incluye entregado, no entregado y portería
+  return false;
+}
+
+/**
+ * Pedidos finalizados antes del historial no tienen fechaOperacion.
+ * Se les asigna la fecha de hoy para que aparezcan al abrir/actualizar el historial.
+ * @returns {number} cantidad de pedidos a los que se selló fecha
+ */
+function asegurarFechasOperacionPedidosFinalizados() {
+  const hoy = fechaOperacionHoyLocal();
+  let n = 0;
+  for (const p of pedidos) {
+    if (!pedidoEstaFinalizadoParaHistorial(p)) continue;
+    if (p.fechaOperacion) continue;
+    p.fechaOperacion = hoy;
+    n += 1;
+  }
+  if (n > 0) guardarPedidos();
+  return n;
+}
+
 function formatearFechaHistorialEs(fechaIso) {
   const m = String(fechaIso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return String(fechaIso || '—');
@@ -8424,6 +8450,7 @@ async function refrescarHistorialEntregasUI() {
   const host = document.getElementById('historialEntregasLista');
   if (!host) return;
   host.innerHTML = '<p class="historial-entregas-cargando">Cargando historial…</p>';
+  const sellados = asegurarFechasOperacionPedidosFinalizados();
   let guardados = cargarHistorialEntregasCacheLocal();
   try {
     if (appEstaOnline() && getAuthToken()) {
@@ -8447,9 +8474,16 @@ async function refrescarHistorialEntregasUI() {
       console.error(e);
     }
   }
+  if (sellados > 0) {
+    mostrarToast(
+      `${sellados} pedido(s) finalizado(s) sin fecha de historial se asignaron a hoy.`,
+      'info',
+      6000
+    );
+  }
   if (fusion.length === 0) {
     host.innerHTML =
-      '<p class="historial-entregas-vacio">Aún no hay días registrados. Cuando se entreguen, devuelvan o marquen pedidos como no entregados, aparecerán aquí.</p>';
+      '<p class="historial-entregas-vacio">Aún no hay días registrados. Solo entran pedidos ya entregados, devueltos o sin entregar (no los pendientes ni en ruta). Al finalizar uno, aparecerá aquí.</p>';
     return;
   }
   host.innerHTML = fusion.map((d) => htmlTarjetaHistorialDia(d)).join('');
