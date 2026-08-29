@@ -491,6 +491,7 @@ function normalizarDiaHistorial(d) {
     recogidoEfectivo: Math.max(0, Number(d.recogidoEfectivo) || 0),
     recogidoNequi: Math.max(0, Number(d.recogidoNequi) || 0),
     recogidoDaviplata: Math.max(0, Number(d.recogidoDaviplata) || 0),
+    pagadoMensajero: Math.max(0, Number(d.pagadoMensajero) || 0),
     porMensajero,
     actualizadoEn: Number(d.actualizadoEn) || Math.floor(Date.now() / 1000),
   };

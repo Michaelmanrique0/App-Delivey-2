@@ -2421,6 +2421,9 @@ function formatearMontoConSigno(n) {
   return `$${v.toLocaleString('es-CO')}`;
 }
 
+/** Tarifa fija por envío entregado o no entregado con recogida en punto. */
+const TARIFA_PAGO_MENSAJERO = 12000;
+
 /** Mismos filtros y sumas que el resumen del mensajero (Nequi, Daviplata, domicilio, etc.). */
 function calcularTotalesEntregaPedidos(arr) {
   const lista = Array.isArray(arr) ? arr : [];
@@ -2434,7 +2437,7 @@ function calcularTotalesEntregaPedidos(arr) {
     .reduce((sum, p) => sum + obtenerValorAReclamarPedido(p), 0);
   const enviosEntregados = lista.filter((p) => p.entregado && !p.noEntregado).length;
   const enviosNoEntregadosEnPunto = lista.filter((p) => p.noEntregado && p.envioRecogido).length;
-  const pagoDomiciliario = (enviosEntregados + enviosNoEntregadosEnPunto) * 12000;
+  const pagoDomiciliario = (enviosEntregados + enviosNoEntregadosEnPunto) * TARIFA_PAGO_MENSAJERO;
   const entregarTienda = Math.max(recogidoDelDia - pagoDomiciliario, 0);
   const totalPagadoNequi = lista
     .filter((p) => p.entregado && !p.noEntregado)
@@ -8336,6 +8339,9 @@ function resumenHistorialDesdePedidosPorFecha(fecha) {
   const recogidoEfectivo = entregadosLista.reduce((s, p) => s + Number(p.montoEfectivo || 0), 0);
   const recogidoNequi = entregadosLista.reduce((s, p) => s + Number(p.montoNequi || 0), 0);
   const recogidoDaviplata = entregadosLista.reduce((s, p) => s + Number(p.montoDaviplata || 0), 0);
+  const enviosPagoMensajero =
+    entregadosLista.length + delDia.filter((p) => p.noEntregado && p.envioRecogido).length;
+  const pagadoMensajero = enviosPagoMensajero * TARIFA_PAGO_MENSAJERO;
 
   const porMap = new Map();
   for (const p of delDia) {
@@ -8379,6 +8385,7 @@ function resumenHistorialDesdePedidosPorFecha(fecha) {
     recogidoEfectivo,
     recogidoNequi,
     recogidoDaviplata,
+    pagadoMensajero,
     porMensajero,
     actualizadoEn: Math.floor(Date.now() / 1000),
   };
@@ -8441,6 +8448,7 @@ function diaHistorialTieneDatos(d) {
     Number(d.recogidoEfectivo || 0) > 0 ||
     Number(d.recogidoNequi || 0) > 0 ||
     Number(d.recogidoDaviplata || 0) > 0 ||
+    Number(d.pagadoMensajero || 0) > 0 ||
     (Array.isArray(d.porMensajero) && d.porMensajero.length > 0)
   );
 }
@@ -8584,6 +8592,7 @@ function htmlTarjetaHistorialDia(dia) {
     `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Sin entregar</span><strong>${fmt(dia.sinEntregar)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido total</span><strong>$${fmt(dia.recogidoTotal)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido en efectivo</span><strong>$${fmt(dia.recogidoEfectivo)}</strong></div>` +
+    `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Pagado al mensajero</span><strong>$${fmt(dia.pagadoMensajero)}</strong></div>` +
     moneyExtras +
     `</div>` +
     htmlBloquePorMensajeroHistorial(dia) +
