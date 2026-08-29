@@ -44,6 +44,10 @@ const HISTORIAL_RETENCION_DEFAULT_DIAS = 30;
 const PRE_RESTORE_USUARIOS_ROLES_STYLE_ID = 'preRestoreUsuariosRolesStyle';
 let sesionUsuario = null;
 let syncRemotoTimer = null;
+/** Evita que un sync viejo pise cambios más recientes o que un refresh borre lo local. */
+let syncPedidosEnCurso = false;
+let syncPedidosRepetir = false;
+const PEDIDOS_SYNC_PENDING_KEY = 'deliveryPedidosSyncPending_v1';
 /** Lista de mensajeros para asignación (solo admin). */
 let listaMensajerosCache = [];
 
@@ -162,15 +166,18 @@ function configurarSoporteOfflineApp() {
 async function reintentarSyncTrasRecuperarConexion() {
   if (!sesionUsuario || !appEstaOnline()) return;
   try {
-    await syncPedidosAlServidor();
+    if (hayPedidosSyncPendiente()) {
+      await syncPedidosAlServidor();
+    }
   } catch (e) {
     console.error(e);
   }
   try {
-    await refrescarPedidosDesdeApi();
-    guardarCachePedidos();
-    renderPedidos();
-    actualizarMarcadores();
+    if (!hayPedidosSyncPendiente()) {
+      await refrescarPedidosDesdeApi();
+      renderPedidos();
+      actualizarMarcadores();
+    }
   } catch (e) {
     console.error(e);
   }
@@ -245,6 +252,27 @@ function getCachePedidosStorageKey() {
   return `${CACHE_PEDIDOS_KEY}_${sesionUsuario.id}`;
 }
 
+function getPedidosSyncPendingKey() {
+  if (!sesionUsuario?.id) return PEDIDOS_SYNC_PENDING_KEY;
+  return `${PEDIDOS_SYNC_PENDING_KEY}_${sesionUsuario.id}`;
+}
+
+function hayPedidosSyncPendiente() {
+  try {
+    return localStorage.getItem(getPedidosSyncPendingKey()) === '1';
+  } catch (_e) {
+    return false;
+  }
+}
+
+function marcarPedidosSyncPendiente(pendiente) {
+  try {
+    const key = getPedidosSyncPendingKey();
+    if (pendiente) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch (_e) {}
+}
+
 async function apiFetch(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   const t = getAuthToken();
@@ -278,17 +306,36 @@ async function apiJson(path, options = {}) {
 function programarSyncPedidosRemoto() {
   if (!sesionUsuario) return;
   if (!appEstaOnline()) return;
+  if (syncPedidosEnCurso) {
+    syncPedidosRepetir = true;
+    return;
+  }
   if (syncRemotoTimer) clearTimeout(syncRemotoTimer);
   syncRemotoTimer = setTimeout(() => {
     syncRemotoTimer = null;
     if (!appEstaOnline()) return;
     syncPedidosAlServidor().catch((e) => {
       console.error(e);
-      if (appEstaOnline()) {
-        mostrarToast(String(e.message || e), 'error', 7000);
-      }
     });
   }, 450);
+}
+
+function flushSyncPedidosAlSalir() {
+  if (syncRemotoTimer) {
+    clearTimeout(syncRemotoTimer);
+    syncRemotoTimer = null;
+  }
+  if (!sesionUsuario || !appEstaOnline() || !hayPedidosSyncPendiente()) return;
+  void syncPedidosAlServidor().catch((e) => console.error(e));
+}
+
+function configurarFlushSyncPedidosAlSalir() {
+  if (configurarFlushSyncPedidosAlSalir._listo) return;
+  configurarFlushSyncPedidosAlSalir._listo = true;
+  window.addEventListener('pagehide', flushSyncPedidosAlSalir);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushSyncPedidosAlSalir();
+  });
 }
 
 function setAppLoadingVisible(visible, mensaje) {
@@ -317,21 +364,43 @@ function nombreMensajeroPorId(userId) {
 
 async function syncPedidosAlServidor() {
   if (!sesionUsuario) return;
-  const orderIndex = pedidos.map((p) => p.id);
-  if (esSesionAdmin()) {
-    await apiJson('/api/orders', {
-      method: 'PUT',
-      body: JSON.stringify({ orders: pedidos, orderIndex }),
-    });
-  } else {
-    await apiJson('/api/orders/messenger', {
-      method: 'PUT',
-      body: JSON.stringify({ orders: pedidos, orderIndex }),
-    });
+  if (syncPedidosEnCurso) {
+    syncPedidosRepetir = true;
+    return;
+  }
+  syncPedidosEnCurso = true;
+  try {
+    do {
+      syncPedidosRepetir = false;
+      const orderIndex = pedidos.map((p) => p.id);
+      if (esSesionAdmin()) {
+        await apiJson('/api/orders', {
+          method: 'PUT',
+          body: JSON.stringify({ orders: pedidos, orderIndex }),
+        });
+      } else {
+        await apiJson('/api/orders/messenger', {
+          method: 'PUT',
+          body: JSON.stringify({ orders: pedidos, orderIndex }),
+        });
+      }
+    } while (syncPedidosRepetir);
+    marcarPedidosSyncPendiente(false);
+  } finally {
+    syncPedidosEnCurso = false;
   }
 }
 
 async function refrescarPedidosDesdeApi() {
+  // Si hay cambios locales sin subir, subirlos antes de leer el servidor
+  // (si no, un GET restauraría pedidos viejos y borraría los nuevos).
+  if (hayPedidosSyncPendiente()) {
+    await syncPedidosAlServidor();
+  }
+  if (hayPedidosSyncPendiente()) {
+    // Sync falló o quedó pendiente: no pisar lo local.
+    return;
+  }
   const data = await apiJson('/api/orders', { method: 'GET' });
   const raw = Array.isArray(data.orders) ? data.orders : [];
   pedidos = deduplicarPedidosPorId(raw.map(normalizarPedidoEnMemoria));
@@ -341,6 +410,7 @@ async function refrescarPedidosDesdeApi() {
     nextPedidoId = 1;
   }
   guardarCachePedidos();
+  marcarPedidosSyncPendiente(false);
 
   // Aviso si el admin modificó el orden (solo mensajeros reciben routeNotice).
   if (data && data.routeNotice && data.routeNotice.at) {
@@ -2313,7 +2383,13 @@ async function procesarMultiplesPedidos(texto) {
 function guardarPedidos() {
   pedidos = deduplicarPedidosPorId(pedidos);
   guardarCachePedidos();
-  if (sesionUsuario) programarSyncPedidosRemoto();
+  if (!sesionUsuario) return;
+  marcarPedidosSyncPendiente(true);
+  if (syncPedidosEnCurso) {
+    syncPedidosRepetir = true;
+    return;
+  }
+  programarSyncPedidosRemoto();
 }
 
 function actualizarPestañasListaPedidos(pendientes, enCurso, entregados, cancelados) {
@@ -7366,6 +7442,7 @@ async function iniciarApp() {
   aplicarVisibilidadPorRol();
   exponerDebugAppDelivery();
   actualizarBannerOffline();
+  configurarFlushSyncPedidosAlSalir();
 
   if (!appEstaOnline()) {
     cargarPedidosDesdeLocalStorage();
@@ -7375,15 +7452,18 @@ async function iniciarApp() {
       mostrarToast('Sin internet y no hay pedidos guardados aún. Conéctate una vez para cargarlos.', 'warning', 9000);
     }
   } else {
+    // Siempre partir del cache local: si hubo cambios sin sync (p. ej. recarga rápida),
+    // primero se suben y solo después se lee el servidor.
+    cargarPedidosDesdeLocalStorage();
     try {
       await refrescarPedidosDesdeApi();
     } catch (e) {
       console.error(e);
-      cargarPedidosDesdeLocalStorage();
+      if (pedidos.length === 0) cargarPedidosDesdeLocalStorage();
       const hayLocal = pedidos.length > 0;
       mostrarToast(
         hayLocal
-          ? `No se pudo contactar el servidor. Mostrando ${pedidos.length} pedido(s) guardado(s) aquí.`
+          ? `No se pudo sincronizar con el servidor. Mostrando ${pedidos.length} pedido(s) guardado(s) aquí.`
           : `No se pudieron cargar los pedidos del servidor: ${String(e.message || e)}`,
         hayLocal ? 'warning' : 'error',
         9000
