@@ -6096,7 +6096,8 @@ function construirMensajeNotificarEnCamino(pedido) {
   const conDisculpa = debeIncluirDisculpaDemoraNotificacionEnCamino();
   const monto = montoACobrarParaNotificacionEnCamino(pedido);
   const esCambio = pedidoEsCambioParaNotificacion(pedido);
-  const bloquePago = construirBloquePagoNotificacion();
+  const incluirMediosPago = !esCambio && monto > 0;
+  const bloquePago = incluirMediosPago ? construirBloquePagoNotificacion() : '';
 
   const anuncioCamino = conDisculpa
     ? `Soy el mensajero externo de Valero Storee. Te pido disculpas por la demora: por clima o por tráfico los pedidos se han demorado. Te confirmo que ya *VOY EN CAMINO* hacia tu ubicación de entrega y que *aún no he llegado*.`
@@ -6119,18 +6120,19 @@ function construirMensajeNotificarEnCamino(pedido) {
   const cierreCamino =
     'Te recuerdo que *VOY EN CAMINO* hacia tu ubicación de entrega y que *aún no he llegado*.';
 
-  return `${saludo}, ${nombre}
-
-${anuncioCamino}
-
-Por favor ten en cuenta:
-${consideraciones.map((l) => `- ${l}`).join('\n')}
-
-${bloquePago}
-
-${cierreCamino}
-
-Gracias por tu compra, ${nombre}.`;
+  const partes = [
+    `${saludo}, ${nombre}`,
+    '',
+    anuncioCamino,
+    '',
+    'Por favor ten en cuenta:',
+    consideraciones.map((l) => `- ${l}`).join('\n'),
+  ];
+  if (bloquePago) {
+    partes.push('', bloquePago);
+  }
+  partes.push('', cierreCamino, '', `Gracias por tu compra, ${nombre}.`);
+  return partes.join('\n');
 }
 
 async function notificarEnCamino(index, pedidoId, opciones = {}) {
@@ -6161,7 +6163,8 @@ async function notificarEnCamino(index, pedidoId, opciones = {}) {
   if (!tels.length) { mostrarAvisoEnApp('No hay número de teléfono del cliente disponible', 'Notificación'); return; }
 
   await refrescarPaymentConfigDesdeServidor();
-  if (!mediosPagoNotificacionListos(paymentConfigEstado.effective)) {
+  const requiereMediosPago = montoACobrarParaNotificacionEnCamino(pedidoFinal) > 0;
+  if (requiereMediosPago && !mediosPagoNotificacionListos(paymentConfigEstado.effective)) {
     abrirConfigNotificacionParaNotificar(indexFinal, pedidoId, opciones);
     return;
   }
@@ -8579,7 +8582,6 @@ function htmlTarjetaHistorialDia(dia) {
     `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Entregados</span><strong>${fmt(dia.entregados)}</strong></div>` +
     `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Devueltos</span><strong>${fmt(dia.devueltos)}</strong></div>` +
     `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Sin entregar</span><strong>${fmt(dia.sinEntregar)}</strong></div>` +
-    `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Pagados por Nequi</span><strong>${fmt(dia.pagadosNequi)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido total</span><strong>$${fmt(dia.recogidoTotal)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido en efectivo</span><strong>$${fmt(dia.recogidoEfectivo)}</strong></div>` +
     moneyExtras +
