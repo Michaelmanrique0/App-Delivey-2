@@ -400,6 +400,86 @@ app.get('/api/me', asyncHandler(authMiddleware), (req, res) => {
   res.json({ user: req.user });
 });
 
+// --- Historial diario de entregas (admin) ---
+
+function parseHistorialDias(raw) {
+  try {
+    const arr = JSON.parse(raw || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+function normalizarDiaHistorial(d) {
+  if (!d || typeof d !== 'object') return null;
+  const fecha = String(d.fecha || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return null;
+  return {
+    fecha,
+    entregados: Math.max(0, Number(d.entregados) || 0),
+    devueltos: Math.max(0, Number(d.devueltos) || 0),
+    sinEntregar: Math.max(0, Number(d.sinEntregar) || 0),
+    pagadosNequi: Math.max(0, Number(d.pagadosNequi) || 0),
+    recogidoTotal: Math.max(0, Number(d.recogidoTotal) || 0),
+    recogidoEfectivo: Math.max(0, Number(d.recogidoEfectivo) || 0),
+    actualizadoEn: Number(d.actualizadoEn) || Math.floor(Date.now() / 1000),
+  };
+}
+
+app.get(
+  '/api/historial-entregas',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const dias = parseHistorialDias(await getMeta('historial_entregas_v1'))
+      .map(normalizarDiaHistorial)
+      .filter(Boolean)
+      .sort((a, b) => b.fecha.localeCompare(a.fecha));
+    res.json({ dias });
+  })
+);
+
+app.put(
+  '/api/historial-entregas',
+  asyncHandler(authMiddleware),
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const incoming = Array.isArray(req.body?.dias) ? req.body.dias : null;
+    if (!incoming) {
+      res.status(400).json({ error: 'Se esperaba dias: []' });
+      return;
+    }
+    const dias = incoming
+      .map(normalizarDiaHistorial)
+      .filter(Boolean)
+      .sort((a, b) => b.fecha.localeCompare(a.fecha));
+    await setMeta('historial_entregas_v1', JSON.stringify(dias));
+    res.json({ ok: true, dias });
+  })
+);
+
+/** Cualquier usuario autenticado puede upsert del día al cerrar entregas. */
+app.post(
+  '/api/historial-entregas/dia',
+  asyncHandler(authMiddleware),
+  asyncHandler(async (req, res) => {
+    const dia = normalizarDiaHistorial(req.body?.dia);
+    if (!dia) {
+      res.status(400).json({ error: 'Día de historial inválido' });
+      return;
+    }
+    const actuales = parseHistorialDias(await getMeta('historial_entregas_v1'))
+      .map(normalizarDiaHistorial)
+      .filter(Boolean);
+    const sinEste = actuales.filter((d) => d.fecha !== dia.fecha);
+    dia.actualizadoEn = Math.floor(Date.now() / 1000);
+    const dias = [...sinEste, dia].sort((a, b) => b.fecha.localeCompare(a.fecha));
+    await setMeta('historial_entregas_v1', JSON.stringify(dias));
+    res.json({ ok: true, dia });
+  })
+);
+
 // --- Medios de pago (tienda + personal por mensajero) ---
 
 app.get(

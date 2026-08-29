@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-<link rel="stylesheet" href="style.css?v=20260814offline">
+<link rel="stylesheet" href="style.css?v=20260829historial">
 <script>
 (function () {
   try {
@@ -161,6 +161,7 @@
         <div id="menuUsuarioPanel" class="menu-usuario-panel" style="display:none;" role="menu">
           <button type="button" class="menu-usuario-accion" role="menuitem" onclick="menuIrAlInicio()"><i class="fa-solid fa-house" aria-hidden="true"></i> Inicio</button>
           <button type="button" id="btnMenuUsuarios" class="menu-usuario-accion" style="display:none;" role="menuitem" onclick="abrirPaginaUsuariosRoles()"><i class="fa-solid fa-users"></i> Usuarios y roles</button>
+          <button type="button" id="btnMenuHistorialEntregas" class="menu-usuario-accion" style="display:none;" role="menuitem" onclick="abrirPaginaHistorialEntregas()"><i class="fa-solid fa-calendar-days"></i> Historial de entregas</button>
           <button type="button" id="btnMediosPagoMenu" class="menu-usuario-accion" style="display:none;" role="menuitem" onclick="abrirConfigNotificacionDesdeMenu()"><i class="fa-solid fa-sliders"></i> Medios de pago (notificación al cliente)</button>
           <button type="button" class="menu-usuario-accion menu-usuario-accion--danger" role="menuitem" onclick="cerrarSesionApp()"><i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión</button>
         </div>
@@ -372,10 +373,22 @@
       <button type="button" class="btn-primary" id="btnCrearUsuarioAdmin" onclick="void crearUsuarioDesdeModal()">Crear</button>
     </div>
   </section>
+
+  <section id="pageHistorialEntregas" class="page-historial-entregas" style="display:none;" aria-hidden="true">
+    <div class="page-historial-entregas-head">
+      <button type="button" class="btn-info" onclick="cerrarPaginaHistorialEntregas()"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Volver</button>
+      <h2 class="page-historial-entregas-titulo"><i class="fa-solid fa-calendar-days" aria-hidden="true"></i> Historial de entregas</h2>
+    </div>
+    <p class="page-historial-entregas-intro">Resumen por día: entregados, devueltos, sin entregar, pagos por Nequi y montos recogidos.</p>
+    <div class="page-historial-entregas-toolbar">
+      <button type="button" class="btn-primary" onclick="void refrescarHistorialEntregasUI()">Actualizar</button>
+    </div>
+    <div id="historialEntregasLista" class="historial-entregas-lista" aria-live="polite"></div>
+  </section>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260825prodF"></script>
+<script src="app.js?v=20260829historial"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
