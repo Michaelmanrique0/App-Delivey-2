@@ -539,40 +539,11 @@ function htmlProductosArrayMultilinea(productos) {
 }
 
 /**
- * Aviso dentro de la página (sin cuadros nativos del navegador).
- * tipo: success | error | info | warning — tap para cerrar antes.
+ * Avisos flotantes desactivados a petición: no mostrar mensajes en esquina.
+ * Las confirmaciones importantes siguen en modales / WhatsApp.
  */
-function mostrarToast(mensaje, tipo = 'info', duracionMs = 5200) {
-  const texto = String(mensaje ?? '');
-  let host = document.getElementById('appToastHost');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'appToastHost';
-    host.className = 'app-toast-host';
-  }
-  // Último nodo en <html>: en móvil suele apilar mejor que solo en body (modales + textarea).
-  document.documentElement.appendChild(host);
-  const el = document.createElement('div');
-  el.className = `app-toast app-toast--${tipo}`;
-  el.setAttribute('role', 'status');
-  el.setAttribute('aria-live', 'polite');
-  el.textContent = texto;
-  el.title = 'Clic para cerrar';
-  host.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('app-toast--visible'));
-  const cerrar = () => {
-    el.classList.remove('app-toast--visible');
-    setTimeout(() => {
-      try {
-        el.remove();
-      } catch (_e) {}
-    }, 280);
-  };
-  const t = setTimeout(cerrar, duracionMs);
-  el.addEventListener('click', () => {
-    clearTimeout(t);
-    cerrar();
-  });
+function mostrarToast(_mensaje, _tipo = 'info', _duracionMs = 5200) {
+  return;
 }
 
 function scrollToTopApp() {
