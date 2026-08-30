@@ -2772,6 +2772,10 @@ button i,
   color: var(--triad-a-dark, #1e3a5f);
 }
 
+.historial-dia-metric--tienda strong {
+  color: #0f766e;
+}
+
 .historial-retencion-box {
   background: #f7f9fb;
   border: 1px solid #e5e7eb;

@@ -8393,6 +8393,7 @@ function resumenHistorialDesdePedidosPorFecha(fecha) {
   const enviosPagoMensajero =
     entregadosLista.length + delDia.filter((p) => p.noEntregado && p.envioRecogido).length;
   const pagadoMensajero = enviosPagoMensajero * TARIFA_PAGO_MENSAJERO;
+  const aEntregarTienda = Math.max(recogidoTotal - pagadoMensajero, 0);
 
   const porMap = new Map();
   for (const p of delDia) {
@@ -8437,6 +8438,7 @@ function resumenHistorialDesdePedidosPorFecha(fecha) {
     recogidoNequi,
     recogidoDaviplata,
     pagadoMensajero,
+    aEntregarTienda,
     porMensajero,
     actualizadoEn: Math.floor(Date.now() / 1000),
   };
@@ -8500,6 +8502,7 @@ function diaHistorialTieneDatos(d) {
     Number(d.recogidoNequi || 0) > 0 ||
     Number(d.recogidoDaviplata || 0) > 0 ||
     Number(d.pagadoMensajero || 0) > 0 ||
+    Number(d.aEntregarTienda || 0) > 0 ||
     (Array.isArray(d.porMensajero) && d.porMensajero.length > 0)
   );
 }
@@ -8511,8 +8514,11 @@ function fusionarHistorialDias(guardados, desdePedidos) {
   }
   for (const d of desdePedidos || []) {
     if (!d || !d.fecha) continue;
-    // Si hay pedidos del día, el resumen actual tiene prioridad.
-    map.set(String(d.fecha), { ...d });
+    const key = String(d.fecha);
+    const prev = map.get(key);
+    // No reemplazar un día guardado con datos por un resumen vacío.
+    if (!diaHistorialTieneDatos(d) && prev && diaHistorialTieneDatos(prev)) continue;
+    map.set(key, { ...d });
   }
   return [...map.values()]
     .filter(diaHistorialTieneDatos)
@@ -8580,7 +8586,7 @@ function quedanPedidosActivosPorEntregar() {
 
 /**
  * Guarda el historial del día. Si era el último pedido activo, fuerza sync inmediato
- * de pedidos + historial completo antes de continuar (WhatsApp, etc.).
+ * de pedidos + reenvío del día (upsert; no reemplaza otros días del historial).
  */
 async function persistirHistorialTrasCierrePedido(pedido) {
   if (!pedido) return;
@@ -8594,7 +8600,7 @@ async function persistirHistorialTrasCierrePedido(pedido) {
     syncRemotoTimer = null;
   }
   try {
-    if (hayPedidosSyncPendiente() || sesionUsuario) {
+    if (sesionUsuario) {
       marcarPedidosSyncPendiente(true);
       await syncPedidosAlServidor();
     }
@@ -8602,34 +8608,9 @@ async function persistirHistorialTrasCierrePedido(pedido) {
     console.error(e);
   }
 
-  const fusion = filtrarDiasHistorialPorRetencion(
-    fusionarHistorialDias(
-      cargarHistorialEntregasCacheLocal(),
-      reconstruirHistorialDesdePedidosActuales()
-    ),
-    cargarRetencionHistorialLocal()
-  );
-  guardarHistorialEntregasCacheLocal(fusion);
-
-  if (!appEstaOnline() || !getAuthToken()) return;
-  try {
-    if (esSesionAdmin()) {
-      await apiJson('/api/historial-entregas', {
-        method: 'PUT',
-        body: JSON.stringify({ dias: fusion }),
-      });
-    } else if (pedido.fechaOperacion) {
-      const dia = fusion.find((d) => String(d.fecha) === String(pedido.fechaOperacion));
-      if (dia) {
-        await apiJson('/api/historial-entregas/dia', {
-          method: 'POST',
-          body: JSON.stringify({ dia }),
-        });
-      }
-    }
-  } catch (e) {
-    console.error(e);
-  }
+  // Reenviar solo el día actual (POST upsert). Nunca PUT de lista completa aquí:
+  // un PUT incompleto borraba días anteriores (p. ej. el de ayer).
+  await sincronizarHistorialPorFecha(pedido.fechaOperacion);
 }
 
 function guardarVistaAppSesionHistorialEntregas() {
@@ -8703,6 +8684,11 @@ function htmlTarjetaHistorialDia(dia) {
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido total</span><strong>$${fmt(dia.recogidoTotal)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido en efectivo</span><strong>$${fmt(dia.recogidoEfectivo)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Pagado al mensajero</span><strong>$${fmt(dia.pagadoMensajero)}</strong></div>` +
+    `<div class="historial-dia-metric historial-dia-metric--money historial-dia-metric--tienda"><span class="historial-dia-metric-label">A entregar a tienda</span><strong>$${fmt(
+      dia.aEntregarTienda != null
+        ? dia.aEntregarTienda
+        : Math.max(Number(dia.recogidoTotal || 0) - Number(dia.pagadoMensajero || 0), 0)
+    )}</strong></div>` +
     moneyExtras +
     `</div>` +
     htmlBloquePorMensajeroHistorial(dia) +
@@ -8763,10 +8749,14 @@ async function refrescarHistorialEntregasUI(opts) {
   const sellados = asegurarFechasOperacionPedidosFinalizados();
   let guardados = cargarHistorialEntregasCacheLocal();
   let retencion = cargarRetencionHistorialLocal();
+  let cargoDesdeServidor = false;
   try {
     if (appEstaOnline() && getAuthToken()) {
       const data = await apiJson('/api/historial-entregas', { method: 'GET' });
-      if (Array.isArray(data.dias)) guardados = data.dias;
+      if (Array.isArray(data.dias)) {
+        guardados = data.dias;
+        cargoDesdeServidor = true;
+      }
       if (data.config && data.config.retencionDias != null) {
         retencion = Number(data.config.retencionDias);
         guardarRetencionHistorialLocal(retencion);
@@ -8778,21 +8768,39 @@ async function refrescarHistorialEntregasUI(opts) {
   if (!opts || !opts.omitirCargaConfig) {
     pintarConfigRetencionHistorialUI(retencion);
   }
-  // Actualizar días presentes en pedidos actuales y persistir
+  // Actualizar solo días presentes en pedidos actuales; conservar el resto del servidor/caché.
   const desdePedidos = reconstruirHistorialDesdePedidosActuales();
   let fusion = filtrarDiasHistorialPorRetencion(
     fusionarHistorialDias(guardados, desdePedidos),
     retencion
   );
   guardarHistorialEntregasCacheLocal(fusion);
-  if (appEstaOnline() && getAuthToken() && esSesionAdmin()) {
+  // Solo sincronizar al servidor si pudimos leer el historial remoto (merge seguro).
+  // Si el GET falló, un PUT incompleto borraría días viejos.
+  if (cargoDesdeServidor && appEstaOnline() && getAuthToken() && esSesionAdmin()) {
     try {
-      await apiJson('/api/historial-entregas', {
+      const dataPut = await apiJson('/api/historial-entregas', {
         method: 'PUT',
         body: JSON.stringify({ dias: fusion }),
       });
+      if (Array.isArray(dataPut.dias)) {
+        fusion = dataPut.dias;
+        guardarHistorialEntregasCacheLocal(fusion);
+      }
     } catch (e) {
       console.error(e);
+    }
+  } else if (desdePedidos.length > 0 && appEstaOnline() && getAuthToken()) {
+    // Sin GET exitoso: al menos upsert de los días reconstruidos (no borra otros).
+    for (const dia of desdePedidos) {
+      try {
+        await apiJson('/api/historial-entregas/dia', {
+          method: 'POST',
+          body: JSON.stringify({ dia }),
+        });
+      } catch (e) {
+        console.error(e);
+      }
     }
   }
   if (sellados > 0) {

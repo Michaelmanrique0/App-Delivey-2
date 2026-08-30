@@ -492,9 +492,48 @@ function normalizarDiaHistorial(d) {
     recogidoNequi: Math.max(0, Number(d.recogidoNequi) || 0),
     recogidoDaviplata: Math.max(0, Number(d.recogidoDaviplata) || 0),
     pagadoMensajero: Math.max(0, Number(d.pagadoMensajero) || 0),
+    aEntregarTienda: Math.max(
+      0,
+      Number(d.aEntregarTienda) ||
+        Math.max(0, (Number(d.recogidoTotal) || 0) - (Number(d.pagadoMensajero) || 0))
+    ),
     porMensajero,
     actualizadoEn: Number(d.actualizadoEn) || Math.floor(Date.now() / 1000),
   };
+}
+
+function diaHistorialTieneActividad(d) {
+  if (!d) return false;
+  return (
+    Number(d.entregados || 0) > 0 ||
+    Number(d.devueltos || 0) > 0 ||
+    Number(d.sinEntregar || 0) > 0 ||
+    Number(d.pagadosNequi || 0) > 0 ||
+    Number(d.recogidoTotal || 0) > 0 ||
+    Number(d.recogidoEfectivo || 0) > 0 ||
+    Number(d.recogidoNequi || 0) > 0 ||
+    Number(d.recogidoDaviplata || 0) > 0 ||
+    Number(d.pagadoMensajero || 0) > 0 ||
+    Number(d.aEntregarTienda || 0) > 0 ||
+    (Array.isArray(d.porMensajero) && d.porMensajero.length > 0)
+  );
+}
+
+/** Upsert por fecha: nunca borra un día solo porque no vino en el payload (salvo retención). */
+function fusionarDiasHistorialServidor(actuales, incoming) {
+  const map = new Map();
+  for (const d of actuales || []) {
+    if (d && d.fecha) map.set(String(d.fecha), d);
+  }
+  for (const d of incoming || []) {
+    if (!d || !d.fecha) continue;
+    const key = String(d.fecha);
+    const prev = map.get(key);
+    // No pisar un día con datos por uno vacío (p. ej. pedidos ya borrados del dispositivo).
+    if (!diaHistorialTieneActividad(d) && prev && diaHistorialTieneActividad(prev)) continue;
+    map.set(key, d);
+  }
+  return [...map.values()];
 }
 
 async function cargarHistorialConfig() {
@@ -560,10 +599,14 @@ app.put(
       return;
     }
     const cfg = await cargarHistorialConfig();
-    const dias = filtrarDiasPorRetencion(
-      incoming.map(normalizarDiaHistorial).filter(Boolean),
-      cfg.retencionDias
-    ).sort((a, b) => b.fecha.localeCompare(a.fecha));
+    const actuales = parseHistorialDias(await getMeta(HISTORIAL_DIAS_META))
+      .map(normalizarDiaHistorial)
+      .filter(Boolean);
+    const normalizados = incoming.map(normalizarDiaHistorial).filter(Boolean);
+    const fusionados = fusionarDiasHistorialServidor(actuales, normalizados);
+    const dias = filtrarDiasPorRetencion(fusionados, cfg.retencionDias).sort((a, b) =>
+      b.fecha.localeCompare(a.fecha)
+    );
     await setMeta(HISTORIAL_DIAS_META, JSON.stringify(dias));
     res.json({ ok: true, dias, config: cfg });
   })
@@ -583,6 +626,14 @@ app.post(
     const actuales = parseHistorialDias(await getMeta(HISTORIAL_DIAS_META))
       .map(normalizarDiaHistorial)
       .filter(Boolean);
+    // No borrar un día con datos si llega un resumen vacío.
+    if (!diaHistorialTieneActividad(dia)) {
+      const prev = actuales.find((d) => d.fecha === dia.fecha);
+      if (prev && diaHistorialTieneActividad(prev)) {
+        res.json({ ok: true, dia: prev, config: cfg, conservado: true });
+        return;
+      }
+    }
     const sinEste = actuales.filter((d) => d.fecha !== dia.fecha);
     dia.actualizadoEn = Math.floor(Date.now() / 1000);
     const dias = filtrarDiasPorRetencion([...sinEste, dia], cfg.retencionDias).sort((a, b) =>
