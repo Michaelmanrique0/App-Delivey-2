@@ -3705,7 +3705,7 @@ function eliminarPedido(index) {
 
 function marcarEntregado(index) {
   const pedido = pedidos[index];
-  if (!pedido) return;
+  if (!pedido) return Promise.resolve();
   pedido.entregado = true;
   pedido.enCurso = false;
   pedido.llegoDestino = false;
@@ -3714,7 +3714,7 @@ function marcarEntregado(index) {
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
-  void sincronizarHistorialDiaPedido(pedido);
+  return persistirHistorialTrasCierrePedido(pedido);
 }
 
 function marcarEnCurso(index) {
@@ -3824,10 +3824,10 @@ function marcarNoEntregado(index) {
 function marcarCancelado(index) {
   if (sesionUsuario && !esSesionAdmin()) {
     mostrarToast('Solo un administrador puede cancelar pedidos.', 'warning');
-    return;
+    return Promise.resolve();
   }
   const pedido = pedidos[index];
-  if (!pedido || pedido.entregado || pedido.cancelado) return;
+  if (!pedido || pedido.entregado || pedido.cancelado) return Promise.resolve();
   pedido.cancelado = true;
   pedido.enCurso = false;
   pedido.llegoDestino = false;
@@ -3836,7 +3836,7 @@ function marcarCancelado(index) {
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
-  void sincronizarHistorialDiaPedido(pedido);
+  return persistirHistorialTrasCierrePedido(pedido);
 }
 
 function reactivarPedidoCancelado(index) {
@@ -5232,7 +5232,7 @@ function fotoEntregado(index, pedidoId) {
   modal.style.display = 'flex';
 }
 
-function registrarEntregaConPago(index, pedidoId, datosPago) {
+async function registrarEntregaConPago(index, pedidoId, datosPago) {
   const indexActual = pedidos.findIndex(p => p.id === pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedido = pedidos[indexFinal];
@@ -5274,7 +5274,7 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
       datosPagoPendientes: null,
       cambioMetodo: '',
     };
-    marcarEntregado(indexFinal);
+    await marcarEntregado(indexFinal);
     iniciarFlujoPostCierrePedido({
       pedidoId,
       tipo: 'porteria',
@@ -5286,12 +5286,6 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
 
   limpiarEntregaPorteriaEnPedido(pedido);
   const mensaje = construirMensajeEntregaRegistrada(pedido);
-  if (enviarWhatsAppAdmin) {
-    const numeroAdmin = obtenerSoporteWhatsApp();
-    void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.').then((copiado) => {
-      if (copiado) abrirWhatsAppChat(numeroAdmin);
-    });
-  }
   pagoEntregadoPendiente = {
     index: null,
     pedidoId: null,
@@ -5301,7 +5295,13 @@ function registrarEntregaConPago(index, pedidoId, datosPago) {
     datosPagoPendientes: null,
     cambioMetodo: '',
   };
-  marcarEntregado(indexFinal);
+  await marcarEntregado(indexFinal);
+  if (enviarWhatsAppAdmin) {
+    const numeroAdmin = obtenerSoporteWhatsApp();
+    void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.').then((copiado) => {
+      if (copiado) abrirWhatsAppChat(numeroAdmin);
+    });
+  }
   notificarSiguientePedido(pedidoId);
 }
 
@@ -5564,7 +5564,7 @@ function fotoNoEntregado(index, pedidoId) {
   mostrarOpcionesNoEntregado(index, pedidoId);
 }
 
-function procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo) {
+async function procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo) {
   const indexActual = pedidos.findIndex(p => p.id === pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedido = pedidos[indexFinal];
@@ -5582,7 +5582,7 @@ function procesarFotoNoEntregado(index, pedidoId, enUbicacion, motivo) {
   guardarPedidos();
   renderPedidos();
   actualizarMarcadores();
-  void sincronizarHistorialDiaPedido(pedido);
+  await persistirHistorialTrasCierrePedido(pedido);
 
   iniciarFlujoPostCierrePedido({
     pedidoId,
@@ -8571,6 +8571,65 @@ async function sincronizarHistorialDiaPedido(pedido) {
   if (!pedido) return;
   sellarFechaOperacionPedido(pedido);
   await sincronizarHistorialPorFecha(pedido.fechaOperacion);
+}
+
+/** True si aún hay pedidos por entregar (pendientes o en ruta). */
+function quedanPedidosActivosPorEntregar() {
+  return pedidos.some((p) => p && !p.entregado && !p.cancelado);
+}
+
+/**
+ * Guarda el historial del día. Si era el último pedido activo, fuerza sync inmediato
+ * de pedidos + historial completo antes de continuar (WhatsApp, etc.).
+ */
+async function persistirHistorialTrasCierrePedido(pedido) {
+  if (!pedido) return;
+  sellarFechaOperacionPedido(pedido);
+  const esUltimo = !quedanPedidosActivosPorEntregar();
+  await sincronizarHistorialPorFecha(pedido.fechaOperacion);
+  if (!esUltimo) return;
+
+  if (syncRemotoTimer) {
+    clearTimeout(syncRemotoTimer);
+    syncRemotoTimer = null;
+  }
+  try {
+    if (hayPedidosSyncPendiente() || sesionUsuario) {
+      marcarPedidosSyncPendiente(true);
+      await syncPedidosAlServidor();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+
+  const fusion = filtrarDiasHistorialPorRetencion(
+    fusionarHistorialDias(
+      cargarHistorialEntregasCacheLocal(),
+      reconstruirHistorialDesdePedidosActuales()
+    ),
+    cargarRetencionHistorialLocal()
+  );
+  guardarHistorialEntregasCacheLocal(fusion);
+
+  if (!appEstaOnline() || !getAuthToken()) return;
+  try {
+    if (esSesionAdmin()) {
+      await apiJson('/api/historial-entregas', {
+        method: 'PUT',
+        body: JSON.stringify({ dias: fusion }),
+      });
+    } else if (pedido.fechaOperacion) {
+      const dia = fusion.find((d) => String(d.fecha) === String(pedido.fechaOperacion));
+      if (dia) {
+        await apiJson('/api/historial-entregas/dia', {
+          method: 'POST',
+          body: JSON.stringify({ dia }),
+        });
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 function guardarVistaAppSesionHistorialEntregas() {
