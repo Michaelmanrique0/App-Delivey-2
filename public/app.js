@@ -2529,9 +2529,9 @@ function htmlBloqueTotalesResumen(totales, opts = {}) {
     return fmt(v);
   };
   const etiquetaNequi =
-    totales.totalPagadoNequi < 0 ? 'Cambio enviado por Nequi (neto)' : 'Pagado por Nequi';
+    totales.totalPagadoNequi < 0 ? 'Cambio enviado por Nequi (neto)' : 'Recogido por Nequi';
   const etiquetaDav =
-    totales.totalPagadoDaviplata < 0 ? 'Cambio enviado por Daviplata (neto)' : 'Pagado por Daviplata';
+    totales.totalPagadoDaviplata < 0 ? 'Cambio enviado por Daviplata (neto)' : 'Recogido por Daviplata';
   const bloqueTotalDelDia = ocultarTotalDelDia
     ? ''
     : `<div class="total-item total-total-dia">` +
@@ -2818,7 +2818,7 @@ function renderPedidos() {
           : totales.totalPagadoNequi.toLocaleString('es-CO');
       if (itemNequi) {
         const label =
-          totales.totalPagadoNequi < 0 ? 'Cambio enviado por Nequi (neto): $' : 'Pagado por Nequi: $';
+          totales.totalPagadoNequi < 0 ? 'Cambio enviado por Nequi (neto): $' : 'Recogido por Nequi: $';
         const icon = itemNequi.querySelector('.total-icon');
         itemNequi.innerHTML = '';
         if (icon) itemNequi.appendChild(icon);
@@ -2835,7 +2835,7 @@ function renderPedidos() {
         const label =
           totales.totalPagadoDaviplata < 0
             ? 'Cambio enviado por Daviplata (neto): $'
-            : 'Pagado por Daviplata: $';
+            : 'Recogido por Daviplata: $';
         const icon = itemDaviplata.querySelector('.total-icon');
         itemDaviplata.innerHTML = '';
         if (icon) itemDaviplata.appendChild(icon);
@@ -2845,8 +2845,7 @@ function renderPedidos() {
     }
     if (elPagadoEfectivo) elPagadoEfectivo.textContent = totales.totalPagadoEfectivo.toLocaleString('es-CO');
     if (itemNequi)
-      itemNequi.style.display =
-        esSesionAdmin() ? 'none' : totales.totalPagadoNequi !== 0 ? 'inline-flex' : 'none';
+      itemNequi.style.display = totales.totalPagadoNequi !== 0 ? 'inline-flex' : 'none';
     if (itemDaviplata)
       itemDaviplata.style.display = totales.totalPagadoDaviplata !== 0 ? 'inline-flex' : 'none';
     if (itemEfectivo) itemEfectivo.style.display = totales.totalPagadoEfectivo !== 0 ? 'inline-flex' : 'none';
@@ -8664,15 +8663,6 @@ function htmlTarjetaHistorialDia(dia) {
   const fmt = (n) => Number(n || 0).toLocaleString('es-CO');
   const nequi = Number(dia.recogidoNequi || 0);
   const davi = Number(dia.recogidoDaviplata || 0);
-  let moneyExtras = '';
-  if (nequi > 0) {
-    moneyExtras +=
-      `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido por Nequi</span><strong>$${fmt(nequi)}</strong></div>`;
-  }
-  if (davi > 0) {
-    moneyExtras +=
-      `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido por Daviplata</span><strong>$${fmt(davi)}</strong></div>`;
-  }
   return (
     `<article class="historial-dia-card">` +
     `<h3 class="historial-dia-fecha">${escapeHtmlTexto(formatearFechaHistorialEs(dia.fecha))}</h3>` +
@@ -8683,13 +8673,14 @@ function htmlTarjetaHistorialDia(dia) {
     `<div class="historial-dia-metric"><span class="historial-dia-metric-label">Sin entregar</span><strong>${fmt(dia.sinEntregar)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido total</span><strong>$${fmt(dia.recogidoTotal)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido en efectivo</span><strong>$${fmt(dia.recogidoEfectivo)}</strong></div>` +
+    `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido por Nequi</span><strong>$${fmt(nequi)}</strong></div>` +
+    `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Recogido por Daviplata</span><strong>$${fmt(davi)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money"><span class="historial-dia-metric-label">Pagado al mensajero</span><strong>$${fmt(dia.pagadoMensajero)}</strong></div>` +
     `<div class="historial-dia-metric historial-dia-metric--money historial-dia-metric--tienda"><span class="historial-dia-metric-label">A entregar a tienda</span><strong>$${fmt(
       dia.aEntregarTienda != null
         ? dia.aEntregarTienda
         : Math.max(Number(dia.recogidoTotal || 0) - Number(dia.pagadoMensajero || 0), 0)
     )}</strong></div>` +
-    moneyExtras +
     `</div>` +
     htmlBloquePorMensajeroHistorial(dia) +
     `</article>`
