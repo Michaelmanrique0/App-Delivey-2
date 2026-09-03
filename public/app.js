@@ -4892,9 +4892,8 @@ function enviarMensajeTiendaFlujoPostCierre() {
   const mensaje = String(flujo.mensajeTienda || '');
   flujo.fase = 'esperando_retorno_tienda';
   flujoPostCierreEstabaOculto = false;
-  void copiarTextoAlPortapapeles(mensaje, toastMensajeTiendaFlujo(flujo.tipo)).then((copiado) => {
-    if (copiado) abrirWhatsAppChat(numeroAdmin);
-  });
+  void copiarTextoAlPortapapeles(mensaje, toastMensajeTiendaFlujo(flujo.tipo));
+  abrirWhatsAppPreferirApp(numeroAdmin, mensaje);
 }
 
 function continuarConSiguientePedidoTrasCierre() {
@@ -5232,7 +5231,7 @@ function fotoEntregado(index, pedidoId) {
 }
 
 async function registrarEntregaConPago(index, pedidoId, datosPago) {
-  const indexActual = pedidos.findIndex(p => p.id === pedidoId);
+  const indexActual = pedidos.findIndex((p) => p.id === pedidoId);
   const indexFinal = indexActual >= 0 ? indexActual : index;
   const pedido = pedidos[indexFinal];
   if (!pedido) return;
@@ -5255,15 +5254,24 @@ async function registrarEntregaConPago(index, pedidoId, datosPago) {
     pagoEntregadoPendiente.lugarEntrega === 'porteria' &&
     String(pagoEntregadoPendiente.recibidoPor || '').trim() !== '';
   const enviarWhatsAppAdmin = pagoEntregadoPendiente.enviarWhatsAppAdmin !== false;
+  const recibidoPorSnap = esPorteria
+    ? String(pagoEntregadoPendiente.recibidoPor || '').trim()
+    : '';
+
+  // Marcar entregado en local de inmediato (el historial va en segundo plano).
+  pedido.entregado = true;
+  pedido.enCurso = false;
+  pedido.llegoDestino = false;
+  pedido.posicionPendiente = null;
+  sellarFechaOperacionPedido(pedido);
 
   if (esPorteria) {
-    const recibidoPor = String(pagoEntregadoPendiente.recibidoPor || '').trim();
     const mensaje = construirMensajeEntregaRegistrada({
       ...pedido,
       lugarEntregaFinal: 'porteria',
-      porteriaRecibidoPor: recibidoPor,
+      porteriaRecibidoPor: recibidoPorSnap,
     });
-    guardarEntregaPorteriaEnPedido(pedido, mensaje, recibidoPor);
+    guardarEntregaPorteriaEnPedido(pedido, mensaje, recibidoPorSnap);
     pagoEntregadoPendiente = {
       index: null,
       pedidoId: null,
@@ -5273,7 +5281,10 @@ async function registrarEntregaConPago(index, pedidoId, datosPago) {
       datosPagoPendientes: null,
       cambioMetodo: '',
     };
-    await marcarEntregado(indexFinal);
+    guardarPedidos();
+    renderPedidos();
+    actualizarMarcadores();
+    void persistirHistorialTrasCierrePedido(pedido);
     iniciarFlujoPostCierrePedido({
       pedidoId,
       tipo: 'porteria',
@@ -5294,14 +5305,26 @@ async function registrarEntregaConPago(index, pedidoId, datosPago) {
     datosPagoPendientes: null,
     cambioMetodo: '',
   };
-  await marcarEntregado(indexFinal);
+  guardarPedidos();
+  renderPedidos();
+  actualizarMarcadores();
+
+  // Abrir chat del vendedor de inmediato (sin esperar portapapeles ni historial).
+  // En móvil un await del clipboard puede colgarse y nunca abrir WhatsApp.
   if (enviarWhatsAppAdmin) {
     const numeroAdmin = obtenerSoporteWhatsApp();
-    void copiarTextoAlPortapapeles(mensaje, 'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.').then((copiado) => {
-      if (copiado) abrirWhatsAppChat(numeroAdmin);
-    });
+    void copiarTextoAlPortapapeles(
+      mensaje,
+      'Mensaje copiado. Si no aparece en WhatsApp, pégalo y adjunta la foto de entrega.'
+    );
+    abrirWhatsAppPreferirApp(numeroAdmin, mensaje);
   }
-  notificarSiguientePedido(pedidoId);
+
+  void persistirHistorialTrasCierrePedido(pedido);
+  // Diferir el modal del siguiente pedido para no cancelar la apertura de WhatsApp en móvil.
+  window.setTimeout(() => {
+    notificarSiguientePedido(pedidoId);
+  }, 700);
 }
 
 /** Tras elegir método de pago: preguntar por cambio (salvo casos que no aplican). */
@@ -5337,14 +5360,14 @@ function volverAMetodoPagoDesdeCambio() {
 function responderDioCambioEntrega(dioCambio) {
   const base = pagoEntregadoPendiente.datosPagoPendientes;
   if (!base) {
-    mostrarToast('Selecciona primero el método de pago.', 'warning');
+    mostrarAvisoEnApp('Selecciona primero el método de pago.', 'Pago');
     mostrarPasoModalPagoEntregado('pago');
     return;
   }
   const { index, pedidoId } = pagoEntregadoPendiente;
   if (!dioCambio) {
     cerrarModalPagoEntregado();
-    registrarEntregaConPago(index, pedidoId, {
+    void registrarEntregaConPago(index, pedidoId, {
       ...base,
       dioCambio: false,
       cambioMetodo: '',
@@ -5358,6 +5381,10 @@ function responderDioCambioEntrega(dioCambio) {
   if (txtMedio) txtMedio.textContent = 'Elige cómo se entregó el cambio.';
   if (inputCambio) inputCambio.value = '';
   mostrarPasoModalPagoEntregado('cambioDetalle');
+  if (inputCambio) {
+    vincularFormateoMilesInput(inputCambio);
+    setTimeout(() => inputCambio.focus(), 40);
+  }
 }
 
 function seleccionarMedioCambioEntrega(medio) {
@@ -5373,24 +5400,25 @@ function seleccionarMedioCambioEntrega(medio) {
 function confirmarCambioEntrega() {
   const base = pagoEntregadoPendiente.datosPagoPendientes;
   if (!base) {
-    mostrarToast('Selecciona primero el método de pago.', 'warning');
+    mostrarAvisoEnApp('Selecciona primero el método de pago.', 'Pago');
     mostrarPasoModalPagoEntregado('pago');
     return;
   }
   const medio = String(pagoEntregadoPendiente.cambioMetodo || '');
   if (!['efectivo', 'nequi', 'daviplata'].includes(medio)) {
-    mostrarToast('Elige si el cambio fue en efectivo, Nequi o Daviplata.', 'warning');
+    mostrarAvisoEnApp('Elige si el cambio fue en efectivo, Nequi o Daviplata.', 'Cambio');
     return;
   }
   const inputCambio = document.getElementById('montoCambioEntrega');
   const monto = parseMontoEntero(inputCambio?.value);
   if (monto <= 0) {
-    mostrarToast('Indica de cuánto fue el cambio.', 'warning');
+    mostrarAvisoEnApp('Indica de cuánto fue el cambio.', 'Cambio');
+    if (inputCambio) inputCambio.focus();
     return;
   }
   const { index, pedidoId } = pagoEntregadoPendiente;
   cerrarModalPagoEntregado();
-  registrarEntregaConPago(index, pedidoId, {
+  void registrarEntregaConPago(index, pedidoId, {
     ...base,
     dioCambio: true,
     cambioMetodo: medio,
