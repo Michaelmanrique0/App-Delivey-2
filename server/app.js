@@ -902,6 +902,16 @@ app.put(
     if (!Array.isArray(orderIndex)) {
       orderIndex = orders.map((p) => p.id);
     }
+    const clientRev = Number(req.body?.clientRevision);
+    const lastRev = Number((await getMeta('orders_client_rev_v1')) || '0') || 0;
+    if (Number.isFinite(clientRev) && clientRev > 0 && clientRev < lastRev) {
+      res.status(409).json({
+        error: 'Hay una versión más nueva de los pedidos en el servidor',
+        code: 'STALE_ORDERS',
+        lastRevision: lastRev,
+      });
+      return;
+    }
     const rows = orders
       .filter((p) => p && p.id != null && Number.isFinite(Number(p.id)))
       .map((p) => ({
@@ -913,6 +923,9 @@ app.put(
       'order_index',
       JSON.stringify(orderIndex.map((oid) => Number(oid)).filter(Number.isFinite))
     );
+    if (Number.isFinite(clientRev) && clientRev > 0) {
+      await setMeta('orders_client_rev_v1', String(Math.floor(clientRev)));
+    }
     res.json(await buildOrdersResponseForUser(req.user));
   })
 );

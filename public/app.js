@@ -48,6 +48,9 @@ let syncRemotoTimer = null;
 let syncPedidosEnCurso = false;
 let syncPedidosRepetir = false;
 const PEDIDOS_SYNC_PENDING_KEY = 'deliveryPedidosSyncPending_v1';
+const PEDIDOS_REV_KEY = 'deliveryPedidosRev_v1';
+/** Revisión local monotónica: evita que un PUT viejo gane a uno nuevo. */
+let pedidosLocalRev = 0;
 /** Lista de mensajeros para asignación (solo admin). */
 let listaMensajerosCache = [];
 
@@ -248,13 +251,21 @@ function migrarTokenLegacySiHaceFalta(userId) {
 }
 
 function getCachePedidosStorageKey() {
-  if (!sesionUsuario?.id) return CACHE_PEDIDOS_KEY;
-  return `${CACHE_PEDIDOS_KEY}_${sesionUsuario.id}`;
+  const uid = sesionUsuario?.id || getAuthActiveUserId();
+  if (!uid) return CACHE_PEDIDOS_KEY;
+  return `${CACHE_PEDIDOS_KEY}_${uid}`;
 }
 
 function getPedidosSyncPendingKey() {
-  if (!sesionUsuario?.id) return PEDIDOS_SYNC_PENDING_KEY;
-  return `${PEDIDOS_SYNC_PENDING_KEY}_${sesionUsuario.id}`;
+  const uid = sesionUsuario?.id || getAuthActiveUserId();
+  if (!uid) return PEDIDOS_SYNC_PENDING_KEY;
+  return `${PEDIDOS_SYNC_PENDING_KEY}_${uid}`;
+}
+
+function getPedidosRevKey() {
+  const uid = sesionUsuario?.id || getAuthActiveUserId();
+  if (!uid) return PEDIDOS_REV_KEY;
+  return `${PEDIDOS_REV_KEY}_${uid}`;
 }
 
 function hayPedidosSyncPendiente() {
@@ -271,6 +282,24 @@ function marcarPedidosSyncPendiente(pendiente) {
     if (pendiente) localStorage.setItem(key, '1');
     else localStorage.removeItem(key);
   } catch (_e) {}
+}
+
+function cargarPedidosLocalRev() {
+  try {
+    pedidosLocalRev = Math.max(0, Math.floor(Number(localStorage.getItem(getPedidosRevKey()) || '0') || 0));
+  } catch (_e) {
+    pedidosLocalRev = 0;
+  }
+  return pedidosLocalRev;
+}
+
+function bumpPedidosLocalRev() {
+  cargarPedidosLocalRev();
+  pedidosLocalRev += 1;
+  try {
+    localStorage.setItem(getPedidosRevKey(), String(pedidosLocalRev));
+  } catch (_e) {}
+  return pedidosLocalRev;
 }
 
 async function apiFetch(path, options = {}) {
@@ -320,13 +349,52 @@ function programarSyncPedidosRemoto() {
   }, 450);
 }
 
+async function forzarSyncPedidosAhora() {
+  if (!sesionUsuario || !appEstaOnline()) return;
+  if (syncRemotoTimer) {
+    clearTimeout(syncRemotoTimer);
+    syncRemotoTimer = null;
+  }
+  await syncPedidosAlServidor();
+}
+
 function flushSyncPedidosAlSalir() {
   if (syncRemotoTimer) {
     clearTimeout(syncRemotoTimer);
     syncRemotoTimer = null;
   }
   if (!sesionUsuario || !appEstaOnline() || !hayPedidosSyncPendiente()) return;
-  void syncPedidosAlServidor().catch((e) => console.error(e));
+  // keepalive: intenta completar el PUT aunque se cierre/recargue la pestaña.
+  try {
+    const token = getAuthToken();
+    if (!token || !esSesionAdmin()) {
+      void syncPedidosAlServidor().catch((e) => console.error(e));
+      return;
+    }
+    const orders = JSON.parse(JSON.stringify(pedidos || []));
+    const body = JSON.stringify({
+      orders,
+      orderIndex: orders.map((p) => p.id),
+      clientRevision: pedidosLocalRev || cargarPedidosLocalRev(),
+    });
+    void fetch('/api/orders', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body,
+      keepalive: true,
+      credentials: 'same-origin',
+    })
+      .then((r) => {
+        if (r && r.ok) marcarPedidosSyncPendiente(false);
+      })
+      .catch((e) => console.error(e));
+  } catch (e) {
+    console.error(e);
+    void syncPedidosAlServidor().catch((err) => console.error(err));
+  }
 }
 
 function configurarFlushSyncPedidosAlSalir() {
@@ -372,17 +440,32 @@ async function syncPedidosAlServidor() {
   try {
     do {
       syncPedidosRepetir = false;
-      const orderIndex = pedidos.map((p) => p.id);
-      if (esSesionAdmin()) {
-        await apiJson('/api/orders', {
-          method: 'PUT',
-          body: JSON.stringify({ orders: pedidos, orderIndex }),
-        });
-      } else {
-        await apiJson('/api/orders/messenger', {
-          method: 'PUT',
-          body: JSON.stringify({ orders: pedidos, orderIndex }),
-        });
+      const revAlEnviar = pedidosLocalRev || cargarPedidosLocalRev();
+      const orders = JSON.parse(JSON.stringify(pedidos || []));
+      const orderIndex = orders.map((p) => p.id);
+      try {
+        if (esSesionAdmin()) {
+          await apiJson('/api/orders', {
+            method: 'PUT',
+            body: JSON.stringify({ orders, orderIndex, clientRevision: revAlEnviar }),
+          });
+        } else {
+          await apiJson('/api/orders/messenger', {
+            method: 'PUT',
+            body: JSON.stringify({ orders, orderIndex }),
+          });
+        }
+      } catch (e) {
+        if (e && e.code === 'STALE_ORDERS') {
+          // Otra copia más nueva en servidor: si aún hay cambios locales, reintentar con rev mayor.
+          bumpPedidosLocalRev();
+          syncPedidosRepetir = true;
+          continue;
+        }
+        throw e;
+      }
+      if (revAlEnviar !== pedidosLocalRev) {
+        syncPedidosRepetir = true;
       }
     } while (syncPedidosRepetir);
     marcarPedidosSyncPendiente(false);
@@ -392,13 +475,10 @@ async function syncPedidosAlServidor() {
 }
 
 async function refrescarPedidosDesdeApi() {
-  // Si hay cambios locales sin subir, subirlos antes de leer el servidor
-  // (si no, un GET restauraría pedidos viejos y borraría los nuevos).
+  // Si hay cambios locales sin subir, subirlos y CONSERVAR lo local.
+  // Un GET inmediato puede devolver la lista vieja y borrar los pedidos nuevos.
   if (hayPedidosSyncPendiente()) {
     await syncPedidosAlServidor();
-  }
-  if (hayPedidosSyncPendiente()) {
-    // Sync falló o quedó pendiente: no pisar lo local.
     return;
   }
   const data = await apiJson('/api/orders', { method: 'GET' });
@@ -2184,6 +2264,7 @@ async function procesarPedido() {
 
   guardarPedidos();
   renderPedidos();
+  void forzarSyncPedidosAhora().catch((e) => console.error(e));
   const pedidoAviso = pedidos.find((p) => Number(p.id) === Number(pedidoFinalId));
   if (pedidoAviso && pedidoAviso.avisoTelefono) scrollToTopApp();
 
@@ -2365,6 +2446,7 @@ async function procesarMultiplesPedidos(texto) {
   if (agregados > 0) {
     guardarPedidos();
     renderPedidos();
+    void forzarSyncPedidosAhora().catch((e) => console.error(e));
     if (pedidos.some((p) => p && p.avisoTelefono)) scrollToTopApp();
     setTimeout(() => actualizarMarcadores(), 500);
     document.getElementById("textoPedido").value = "";
@@ -2384,6 +2466,7 @@ function guardarPedidos() {
   pedidos = deduplicarPedidosPorId(pedidos);
   guardarCachePedidos();
   if (!sesionUsuario) return;
+  bumpPedidosLocalRev();
   marcarPedidosSyncPendiente(true);
   if (syncPedidosEnCurso) {
     syncPedidosRepetir = true;
@@ -3696,6 +3779,7 @@ function eliminarPedido(index) {
       guardarPedidos();
       renderPedidos();
       actualizarMarcadores();
+      void forzarSyncPedidosAhora().catch((e) => console.error(e));
       mostrarToast(`Pedido #${idRef} eliminado.`, 'success');
     },
     onCancelar: () => {}
@@ -3882,6 +3966,7 @@ function eliminarTodos() {
           ajustarMapaConReintentos();
         }
       } catch (_e) {}
+      void forzarSyncPedidosAhora().catch((e) => console.error(e));
       mostrarToast('Todos los pedidos fueron eliminados.', 'success');
     },
     onCancelar: () => {}
@@ -4893,7 +4978,8 @@ function enviarMensajeTiendaFlujoPostCierre() {
   flujo.fase = 'esperando_retorno_tienda';
   flujoPostCierreEstabaOculto = false;
   void copiarTextoAlPortapapeles(mensaje, toastMensajeTiendaFlujo(flujo.tipo));
-  abrirWhatsAppPreferirApp(numeroAdmin, mensaje);
+  // Chat vacío: el mensajero pega el texto (y adjunta la foto).
+  abrirWhatsAppChat(numeroAdmin);
 }
 
 function continuarConSiguientePedidoTrasCierre() {
@@ -5309,15 +5395,14 @@ async function registrarEntregaConPago(index, pedidoId, datosPago) {
   renderPedidos();
   actualizarMarcadores();
 
-  // Abrir chat del vendedor de inmediato (sin esperar portapapeles ni historial).
-  // En móvil un await del clipboard puede colgarse y nunca abrir WhatsApp.
+  // Copiar texto y abrir chat vacío (sin mensaje precargado) para pegar y adjuntar foto.
   if (enviarWhatsAppAdmin) {
     const numeroAdmin = obtenerSoporteWhatsApp();
     void copiarTextoAlPortapapeles(
       mensaje,
-      'Mensaje copiado. Si no aparece en WhatsApp, pégalo y adjunta la foto de entrega.'
+      'Mensaje copiado. Pégalo en el chat y adjunta la foto de entrega.'
     );
-    abrirWhatsAppPreferirApp(numeroAdmin, mensaje);
+    abrirWhatsAppChat(numeroAdmin);
   }
 
   void persistirHistorialTrasCierrePedido(pedido);
@@ -7453,6 +7538,7 @@ function cerrarModalQrPedidos() {
 
 function cargarPedidosDesdeLocalStorage() {
   migrarCachePedidosDesdeClavesAntiguas();
+  cargarPedidosLocalRev();
   const raw = cargarCachePedidos();
   pedidos = deduplicarPedidosPorId((raw || []).map(normalizarPedidoEnMemoria));
   if (pedidos.length > 0) {
@@ -7480,10 +7566,15 @@ async function iniciarApp() {
     }
   } else {
     // Siempre partir del cache local: si hubo cambios sin sync (p. ej. recarga rápida),
-    // primero se suben y solo después se lee el servidor.
+    // primero se suben y se conservan; no se pisan con el servidor.
     cargarPedidosDesdeLocalStorage();
     try {
-      await refrescarPedidosDesdeApi();
+      if (hayPedidosSyncPendiente()) {
+        await forzarSyncPedidosAhora();
+        // Mantener lo local recién subido (o pendiente si falló el sync).
+      } else {
+        await refrescarPedidosDesdeApi();
+      }
     } catch (e) {
       console.error(e);
       if (pedidos.length === 0) cargarPedidosDesdeLocalStorage();

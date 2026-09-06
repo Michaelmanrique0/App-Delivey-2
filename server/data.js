@@ -218,15 +218,22 @@ async function deleteOrderRow(id) {
 async function replaceAllOrders(orderRows) {
   const { data: existing, error: selErr } = await supabase.from(T.orders).select('id');
   if (selErr) throw selErr;
-  const allIds = (existing || []).map((r) => r.id);
+  const keepIds = new Set(
+    (orderRows || [])
+      .map((r) => Number(r.id))
+      .filter((id) => Number.isFinite(id))
+  );
+  const toDelete = (existing || [])
+    .map((r) => r.id)
+    .filter((id) => !keepIds.has(Number(id)));
   const delChunk = 300;
-  for (let i = 0; i < allIds.length; i += delChunk) {
-    const part = allIds.slice(i, i + delChunk);
+  for (let i = 0; i < toDelete.length; i += delChunk) {
+    const part = toDelete.slice(i, i + delChunk);
     const { error: delErr } = await supabase.from(T.orders).delete().in('id', part);
     if (delErr) throw delErr;
   }
   const rows = [];
-  for (const r of orderRows) {
+  for (const r of orderRows || []) {
     try {
       const obj = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
       rows.push({
@@ -240,7 +247,7 @@ async function replaceAllOrders(orderRows) {
   const chunk = 500;
   for (let i = 0; i < rows.length; i += chunk) {
     const part = rows.slice(i, i + chunk);
-    const { error } = await supabase.from(T.orders).insert(part);
+    const { error } = await supabase.from(T.orders).upsert(part, { onConflict: 'id' });
     if (error) throw error;
   }
 }
